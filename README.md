@@ -68,10 +68,13 @@ Every script has a quick code-test mode that uses random data instead of downloa
 **Token sequence inside the transformer:**
 
 ```
-[CLS] [REG_1] [REG_2] [REG_3] [REG_4] [PATCH_1] ... [PATCH_64]
-  │      └──── learnable, no position ────┘  └─ 8x8 patches of a 64x64 image
-  │           embedding, discarded at output
-  └── used for classification
+[CLS]  [REG_1] [REG_2] [REG_3] [REG_4]  [PATCH_1] ... [PATCH_64]
+  │        └───────────┬───────────┘         └───────────┬───────────┘
+  │                     │                                 │
+  │           learnable, no position                 8x8 patches of a
+  │        embedding; discarded at output               64x64 image
+  │
+used for classification
 ```
 
 **Design choices:**
@@ -129,6 +132,14 @@ We load Meta's released DINOv2 checkpoints (ViT-S/B/L/g with patch size 14, each
 ![Norm maps](results/figures/part_a_norm_maps.png)
 
 ## 7. Differences from the paper
+
+Changes from our proposal:
+
+- We use only DINOv2, not CLIP. Meta released DINOv2 models trained both with and without registers, but no CLIP model with registers exists publicly, so a before/after comparison is only possible for DINOv2.
+- We load the models from Meta's official repository through PyTorch Hub instead of HuggingFace. These are the same weights from the original source.
+- For Part A we use Imagenette validation images (object-centred photos, similar to the paper's figures), since the DINOv2 models expect larger images than Tiny-ImageNet's 64×64.
+
+Other differences:
 
 - **Model sizes in Part A:** The paper's Fig 4c compares DINOv2 models trained separately at each size. Meta's *released* ViT-S/B/L were distilled from ViT-g, so the size trend in our Part A is measured on distilled models. This may differ from the paper's trend.
 - **Images:** 256 Imagenette validation images at 224x224 (16x16 patches), not the paper's image set or resolution.
