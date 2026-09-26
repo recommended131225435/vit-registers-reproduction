@@ -1,0 +1,6 @@
+# Minimum versions. Exact versions used on Colab are saved to requirements-lock.txt by the notebook.
+torch>=2.3
+torchvision>=0.17
+numpy
+matplotlib
+pytest
