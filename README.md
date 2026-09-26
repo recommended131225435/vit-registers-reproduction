@@ -68,13 +68,10 @@ Every script has a quick code-test mode that uses random data instead of downloa
 **Token sequence inside the transformer:**
 
 ```
-[CLS]  [REG_1] [REG_2] [REG_3] [REG_4]  [PATCH_1] ... [PATCH_64]
-  │        └───────────┬───────────┘         └───────────┬───────────┘
-  │                     │                                 │
-  │           learnable, no position                 8x8 patches of a
-  │        embedding; discarded at output               64x64 image
-  │
-used for classification
+[CLS] [REG_1] [REG_2] [REG_3] [REG_4] [PATCH_1] ... [PATCH_64]
+  │      └──── learnable, no position ────┘  └─ 8x8 patches of a 64x64 image
+  │           embedding, discarded at output
+  └── used for classification
 ```
 
 **Design choices:**
@@ -110,14 +107,14 @@ We load Meta's released DINOv2 checkpoints (ViT-S/B/L/g with patch size 14, each
 
 | Paper claim | Paper evidence | Our evidence |
 |---|---|---|
-| Some output patch tokens have a much larger norm (bimodal distribution) | Fig 3 | `part_a_norm_histograms.png` |
+| Some patch tokens have a much larger norm (two separate humps in the histogram) | Fig 3 | `part_a_norm_histograms.png` |
 | The outliers appear only in larger models | Fig 4c | `part_a_outliers_by_size.png` |
 | Outliers sit on patches that are very similar to their neighbours | Fig 5a | `part_a_neighbour_cosine.png` |
 | Registers remove the outliers | Fig 7 | histograms + table below |
 | Registers give clean attention maps | Fig 1, 19 | `part_a_attention_maps.png` |
 | With registers, the high norms move into the register tokens | Fig 15 | register-norm table below |
 
-**How we find outliers:** We use the L2 norm of each output patch token (`x_norm_patchtokens`). A token is an outlier if its norm is more than 3 times the median patch norm of the no-register model of the same size. The same cutoff is then applied to the register version. The paper hand-picked 150 for ViT-g and says the cutoff depends on the model. We use a fixed rule so that every size is treated the same way. We also report the same analysis on the tokens before the final LayerNorm.
+**How we find outliers:** We use the L2 norm (vector length) of each patch token at the output of the last transformer block, **before the model's final LayerNorm**. The final LayerNorm rescales every token to a similar length, which hides the outliers; our first run measured after it and found none (see `part_a_norm_histograms_after_layernorm.png`). A token is an outlier if its norm is more than 3 times the median norm of the same model. We judge each model against its own typical token because different models have very different typical norms. For ViT-g we also apply the paper's own hand-picked cutoff of 150.
 
 **How we get attention maps:** A hook captures the input to the last attention layer. We recompute `softmax(q·kᵀ/√d)` and take the [CLS] row over the patch tokens, averaged over heads. We checked this against the DINOv2 module: recomputing the full attention output this way matches the module's own output to within 1e-7.
 
@@ -127,23 +124,32 @@ We load Meta's released DINOv2 checkpoints (ViT-S/B/L/g with patch size 14, each
 
 ![Norm histograms](results/figures/part_a_norm_histograms.png)
 ![Outliers by size](results/figures/part_a_outliers_by_size.png)
-![Neighbour similarity](results/figures/part_a_neighbour_cosine.png)
 ![Attention maps](results/figures/part_a_attention_maps.png)
 ![Norm maps](results/figures/part_a_norm_maps.png)
+![Neighbour similarity](results/figures/part_a_neighbour_cosine.png)
+![Norms after LayerNorm](results/figures/part_a_norm_histograms_after_layernorm.png)
+
+### What Part A shows
+
+- **High-norm tokens (Fig 3): reproduced for ViT-g.** Without registers, ViT-g's patch-token norms form two separate humps: most tokens sit below ~150 and a small group sits between roughly 300 and 560. About 2.6% of tokens are above the paper's cutoff of 150, against 2.37% in the paper.
+- **Registers remove them (Fig 7): reproduced.** The ViT-g model with registers has no second hump.
+- **Attention maps (Fig 1): reproduced.** Without registers, ViT-B, L and g show bright spots on background patches (for example image corners). With registers, attention sits on the object. ViT-S is clean in both versions, in line with the paper's finding that small models don't have artifacts.
+- **Model size (Fig 4c): partly reproduced.** Clear high-norm outliers appear only in ViT-g (ViT-B has a very small tail, S and L none). The paper finds outliers from ViT-L upwards. A likely reason: Meta's released S, B and L models were distilled from ViT-g rather than trained on their own as in the paper's Fig 4c. ViT-L still shows attention-map artifacts, so the behaviour is not fully gone in it.
+- **The final LayerNorm hides the outliers.** After it, the largest token is only slightly longer than a typical one in every model. The paper's norms must therefore be measured before this layer.
 
 ## 7. Differences from the paper
 
-Changes from our proposal:
+**Changes from our proposal**
 
 - We use only DINOv2, not CLIP. Meta released DINOv2 models trained both with and without registers, but no CLIP model with registers exists publicly, so a before/after comparison is only possible for DINOv2.
 - We load the models from Meta's official repository through PyTorch Hub instead of HuggingFace. These are the same weights from the original source.
-- For Part A we use Imagenette validation images (object-centred photos, similar to the paper's figures), since the DINOv2 models expect larger images than Tiny-ImageNet's 64×64.
+- For Part A we use Imagenette validation images (object-centred photos, similar to the paper's figures), since the DINOv2 models expect larger images than Tiny-ImageNet's 64x64.
 
-Other differences:
+**Differences from the paper's setup**
 
 - **Model sizes in Part A:** The paper's Fig 4c compares DINOv2 models trained separately at each size. Meta's *released* ViT-S/B/L were distilled from ViT-g, so the size trend in our Part A is measured on distilled models. This may differ from the paper's trend.
 - **Images:** 256 Imagenette validation images at 224x224 (16x16 patches), not the paper's image set or resolution.
-- **Outlier cutoff:** a fixed relative rule (3 × median) instead of a hand-picked value per model.
+- **Outlier cutoff:** a fixed relative rule (3 × the model's median norm) instead of a hand-picked value per model. For ViT-g we also report the paper's cutoff of 150.
 - **Part B scale:** ViTs with 5–86M parameters trained from scratch on 64x64 images for tens of epochs. The paper trains ViT-B/L on ImageNet-22k or larger datasets for much longer. The paper reports that artifacts only appear in large, long-trained models (Fig 4), so our small models may show no artifacts at all. This is what our Week 4 experiment tests.
 
 ## 8. Next steps

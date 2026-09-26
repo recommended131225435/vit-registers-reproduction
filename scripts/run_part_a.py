@@ -14,9 +14,16 @@ Usage (from the repo root; a GPU is recommended, e.g. Colab T4):
     python -m scripts.run_part_a                    # all sizes, ~15-25 min (mostly downloads)
     python -m scripts.run_part_a --sizes S,B,L      # skip giant if Colab runs out of memory
     python -m scripts.run_part_a --smoke            # random weights + random images: code test only
+    python -m scripts.run_part_a --reuse            # redo tables/figures from saved measurements (no models)
 
-Outputs: results/figures/part_a_*.png, results/part_a/summary.{json,md}.
-The summary is also copied into README.md.
+How outliers are measured:
+    - Token norms are taken at the output of the last transformer block, BEFORE the
+      final LayerNorm (the LayerNorm rescales every token and hides the outliers).
+    - A token is an outlier if its norm is more than 3x the median norm of the same model.
+    - For ViT-g we also report the paper's own hand-picked cutoff of 150.
+
+Outputs: results/figures/part_a_*.png, results/part_a/summary.{json,md},
+results/part_a/raw_stats.npz (all measurements). The summary is also copied into README.md.
 """
 
 import argparse
@@ -37,7 +44,9 @@ from src.utils import REPO_ROOT, get_device
 
 FIG_DIR = REPO_ROOT / "results" / "figures"
 OUT_DIR = REPO_ROOT / "results" / "part_a"
-PATCH_SIZE = 14  # all DINOv2 models use 14x14 patches
+PATCH_SIZE = 14             # all DINOv2 models use 14x14 patches
+PAPER_CUTOFF_VIT_G = 150.0  # the paper's hand-picked outlier cutoff for DINOv2 ViT-g (Sec 2.1)
+PAPER_OUTLIER_PCT_VIT_G = 2.37  # % of ViT-g tokens above that cutoff, reported in the paper (Fig 3)
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,9 +56,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--img-size", type=int, default=224, help="must be a multiple of 14")
     p.add_argument("--n-maps", type=int, default=4, help="images shown in the attention / norm-map figures")
     p.add_argument("--cutoff-mult", type=float, default=3.0,
-                   help="outlier = norm > this x median norm of the no-register model")
+                   help="outlier = norm > this x the median norm of the same model")
     p.add_argument("--data-root", default="data")
     p.add_argument("--smoke", action="store_true", help="random weights + random images (code test only)")
+    p.add_argument("--reuse", action="store_true",
+                   help="skip the models; reuse measurements saved in results/part_a/raw_stats.npz")
     args = p.parse_args()
     args.sizes = [s.strip() for s in args.sizes.split(",")]
     if any(s not in DINOV2_ARCHS for s in args.sizes):
@@ -96,53 +107,76 @@ def run_all_models(sizes: list[str], loader: DataLoader, device, n_maps: int, sm
     return stats
 
 
-def summarise(stats: dict, sizes: list[str], cutoff_mult: float) -> dict:
-    """Turn raw measurements into the numbers we report, one entry per model size.
+def save_stats(stats: dict, path: Path) -> None:
+    """Save every measurement so tables and figures can be remade without rerunning the models."""
+    arrays = {}
+    for (size, has_registers), s in stats.items():
+        for key, value in s.items():
+            arrays[f"{size}|{int(has_registers)}|{key}"] = np.asarray(value)
+    np.savez_compressed(path, **arrays)
 
-    The cutoff is computed on the no-register model and applied to both
-    versions, so both are judged by the same standard.
+
+def load_stats(path: Path) -> dict:
+    stats = {}
+    with np.load(path) as data:
+        for name in data.files:
+            size, has_registers, key = name.split("|")
+            value = data[name]
+            stats.setdefault((size, bool(int(has_registers))), {})[key] = int(value) if key == "grid_size" else value
+    return stats
+
+
+def summarise(stats: dict, sizes: list[str], cutoff_mult: float) -> tuple[dict, dict]:
+    """Turn raw measurements into the numbers we report.
+
+    Returns (table, cutoffs): table[size] holds the numbers for one model size,
+    cutoffs[(size, has_registers)] holds each model's own outlier cutoff.
     """
+    cutoffs = {key: outlier_cutoff(s["patch_norm"], cutoff_mult) for key, s in stats.items()}
     table = {}
     for size in sizes:
-        no_reg, reg = stats[(size, False)], stats[(size, True)]
-        cutoff = outlier_cutoff(no_reg["norm_post"], cutoff_mult)
-        cutoff_pre = outlier_cutoff(no_reg["norm_pre"], cutoff_mult)
-        is_outlier = no_reg["norm_post"] > cutoff
-        table[size] = {
-            "median_norm_no_reg": float(np.median(no_reg["norm_post"])),
-            "max_norm_no_reg": float(no_reg["norm_post"].max()),
-            "max_norm_reg": float(reg["norm_post"].max()),
-            "cutoff": cutoff,
-            "cutoff_prenorm": cutoff_pre,
-            "pct_outliers_no_reg": 100 * float(is_outlier.mean()),
-            "pct_outliers_reg": 100 * float((reg["norm_post"] > cutoff).mean()),
-            "pct_outliers_no_reg_prenorm": 100 * float((no_reg["norm_pre"] > cutoff_pre).mean()),
-            "pct_outliers_reg_prenorm": 100 * float((reg["norm_pre"] > cutoff_pre).mean()),
-            "cosine_outlier": float(no_reg["cosine"][is_outlier].mean()) if is_outlier.any() else None,
-            "cosine_normal": float(no_reg["cosine"][~is_outlier].mean()),
-            "cls_norm_reg": float(reg["cls_norm"].mean()),
-            "register_norms_reg": [float(v) for v in reg["reg_norm"].mean(axis=0)],
-            "median_patch_norm_reg": float(np.median(reg["norm_post"])),
-        }
-    return table
+        row = {}
+        for has_registers, tag in ((False, "no_reg"), (True, "reg")):
+            s = stats[(size, has_registers)]
+            norms = s["patch_norm"]
+            is_outlier = norms > cutoffs[(size, has_registers)]
+            row[f"median_{tag}"] = float(np.median(norms))
+            row[f"max_{tag}"] = float(norms.max())
+            row[f"cutoff_{tag}"] = cutoffs[(size, has_registers)]
+            row[f"pct_outliers_{tag}"] = 100 * float(is_outlier.mean())
+            # After the final LayerNorm: how much bigger is the largest token than a typical one?
+            after_ln = s["patch_norm_after_ln"]
+            row[f"max_over_median_after_ln_{tag}"] = float(after_ln.max() / np.median(after_ln))
+            row[f"max_over_median_{tag}"] = float(norms.max() / np.median(norms))
+
+        no_reg = stats[(size, False)]
+        is_outlier = no_reg["patch_norm"] > cutoffs[(size, False)]
+        row["cosine_outlier"] = float(no_reg["cosine"][is_outlier].mean()) if is_outlier.any() else None
+        row["cosine_normal"] = float(no_reg["cosine"][~is_outlier].mean())
+
+        reg = stats[(size, True)]
+        row["cls_norm_reg"] = float(reg["cls_norm"].mean())
+        row["register_norms_reg"] = [float(v) for v in reg["reg_norm"].mean(axis=0)]
+        if size == "g":  # the paper's own cutoff, only defined for ViT-g
+            row["pct_above_paper_cutoff_no_reg"] = 100 * float((no_reg["patch_norm"] > PAPER_CUTOFF_VIT_G).mean())
+        table[size] = row
+    return table, cutoffs
 
 
-def make_figures(stats: dict, table: dict, sizes: list[str], images: torch.Tensor) -> None:
+def make_figures(stats: dict, table: dict, cutoffs: dict, sizes: list[str], images: torch.Tensor) -> None:
     largest = sizes[-1]
-    cutoffs = {s: table[s]["cutoff"] for s in sizes}
-    cutoffs_pre = {s: table[s]["cutoff_prenorm"] for s in sizes}
-    plot_norm_histograms(stats, sizes, "norm_post", cutoffs,
-                         "Output patch-token norms (paper Fig 3 / Fig 7)", FIG_DIR / "part_a_norm_histograms.png")
-    plot_norm_histograms(stats, sizes, "norm_pre", cutoffs_pre,
-                         "Patch-token norms before the final LayerNorm",
-                         FIG_DIR / "part_a_norm_histograms_prenorm.png")
+    plot_norm_histograms(stats, sizes, "patch_norm", "Patch-token norms, before the final LayerNorm (paper Fig 3 / Fig 7)",
+                         FIG_DIR / "part_a_norm_histograms.png", cutoffs=cutoffs)
+    plot_norm_histograms(stats, sizes, "patch_norm_after_ln",
+                         "Patch-token norms AFTER the final LayerNorm (outliers are hidden here)",
+                         FIG_DIR / "part_a_norm_histograms_after_layernorm.png")
     plot_outlier_bars(table, sizes, FIG_DIR / "part_a_outliers_by_size.png")
-    plot_neighbour_cosine(stats[(largest, False)]["norm_post"], stats[(largest, False)]["cosine"],
-                          cutoffs[largest], f"DINOv2 ViT-{largest}/14, no registers (paper Fig 5a)",
+    plot_neighbour_cosine(stats[(largest, False)]["patch_norm"], stats[(largest, False)]["cosine"],
+                          cutoffs[(largest, False)], f"DINOv2 ViT-{largest}/14, no registers (paper Fig 5a)",
                           FIG_DIR / "part_a_neighbour_cosine.png")
     plot_maps(stats, sizes, images, "attention", "Last-block [CLS] attention (paper Fig 1)",
               FIG_DIR / "part_a_attention_maps.png")
-    plot_maps(stats, sizes, images, "norm", "Output patch-token norm maps (paper Fig 21)",
+    plot_maps(stats, sizes, images, "norm", "Patch-token norm maps (paper Fig 21)",
               FIG_DIR / "part_a_norm_maps.png")
 
 
@@ -153,42 +187,53 @@ def format_summary(table: dict, sizes: list[str], args: argparse.Namespace, num_
 
     setup = (
         f"Setup: official DINOv2 checkpoints (torch.hub), {args.n_images} Imagenette validation images at "
-        f"{args.img_size}x{args.img_size} ({num_patches} patches each). An outlier is an output patch token "
-        f"whose norm is more than {args.cutoff_mult:g} x the median norm of the no-register model of the "
-        f"same size; the same cutoff is used for its register version. (The paper used a hand-picked 150 for ViT-g.)"
+        f"{args.img_size}x{args.img_size} ({num_patches} patches each). Norms are measured on the output of the "
+        f"last transformer block, before the final LayerNorm. An outlier is a patch token whose norm is more than "
+        f"{args.cutoff_mult:g} x the median norm of the same model."
     )
     if args.smoke:
         setup = "**SMOKE TEST: random weights and random images, numbers are meaningless.**\n\n" + setup
 
     main_table = markdown_table(
-        ["Model", "Median norm", "Cutoff", "Max norm (no reg / reg)", "% outliers, no reg",
-         "% outliers, 4 reg", "Neighbour similarity, outlier vs normal"],
-        [[f"ViT-{s}/14", fmt(t["median_norm_no_reg"]), fmt(t["cutoff"]),
-          f"{fmt(t['max_norm_no_reg'])} / {fmt(t['max_norm_reg'])}",
+        ["Model", "Median norm (no reg / 4 reg)", "Max norm (no reg / 4 reg)",
+         "% outliers, no reg", "% outliers, 4 reg", "Neighbour similarity, outlier vs normal (no reg)"],
+        [[f"ViT-{s}/14",
+          f"{fmt(t['median_no_reg'])} / {fmt(t['median_reg'])}",
+          f"{fmt(t['max_no_reg'])} / {fmt(t['max_reg'])}",
           f"{fmt(t['pct_outliers_no_reg'], 2)}%", f"{fmt(t['pct_outliers_reg'], 2)}%",
           f"{fmt(t['cosine_outlier'], 3)} vs {fmt(t['cosine_normal'], 3)}"]
          for s, t in ((s, table[s]) for s in sizes)],
     )
-    prenorm_table = markdown_table(
-        ["Model", "% outliers, no reg", "% outliers, 4 reg"],
-        [[f"ViT-{s}/14", f"{fmt(table[s]['pct_outliers_no_reg_prenorm'], 2)}%",
-          f"{fmt(table[s]['pct_outliers_reg_prenorm'], 2)}%"] for s in sizes],
-    )
-    register_table = markdown_table(
-        ["Model", "[CLS]", "reg_0", "reg_1", "reg_2", "reg_3", "median patch"],
-        [[f"ViT-{s}/14 + reg", fmt(table[s]["cls_norm_reg"]),
-          *[fmt(v) for v in table[s]["register_norms_reg"]], fmt(table[s]["median_patch_norm_reg"])]
-         for s in sizes],
-    )
-    return "\n\n".join([
-        setup,
-        main_table,
-        "Same rule applied to the norms *before* the final LayerNorm:",
-        prenorm_table,
-        "Average output norms in the register models (where do the high norms go? cf. paper Fig 15b):",
-        register_table,
+    parts = [setup, main_table]
+
+    if "g" in sizes:
+        t = table["g"]
+        parts.append(
+            f"With the paper's own cutoff (norm > {PAPER_CUTOFF_VIT_G:g}) on ViT-g: "
+            f"**{fmt(t['pct_above_paper_cutoff_no_reg'], 2)}%** of patch tokens without registers "
+            f"(paper reports {PAPER_OUTLIER_PCT_VIT_G}%). This cutoff is only meaningful for the no-register model, "
+            f"which is what the paper applied it to."
+        )
+
+    parts += [
+        "Why before the final LayerNorm: the LayerNorm rescales every token to a similar length. "
+        "Largest token norm divided by the median norm:",
+        markdown_table(
+            ["Model", "before LayerNorm (no reg / 4 reg)", "after LayerNorm (no reg / 4 reg)"],
+            [[f"ViT-{s}/14",
+              f"{fmt(table[s]['max_over_median_no_reg'], 2)}x / {fmt(table[s]['max_over_median_reg'], 2)}x",
+              f"{fmt(table[s]['max_over_median_after_ln_no_reg'], 2)}x / "
+              f"{fmt(table[s]['max_over_median_after_ln_reg'], 2)}x"] for s in sizes],
+        ),
+        "Average norms in the register models, before the final LayerNorm (where do the high norms go? cf. paper Fig 15b):",
+        markdown_table(
+            ["Model", "[CLS]", "reg_0", "reg_1", "reg_2", "reg_3", "median patch"],
+            [[f"ViT-{s}/14 + reg", fmt(table[s]["cls_norm_reg"]),
+              *[fmt(v) for v in table[s]["register_norms_reg"]], fmt(table[s]["median_reg"])] for s in sizes],
+        ),
         "Figures: `results/figures/part_a_*.png`",
-    ])
+    ]
+    return "\n\n".join(parts)
 
 
 def main() -> None:
@@ -196,13 +241,24 @@ def main() -> None:
     device = get_device()
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    raw_path = OUT_DIR / ("raw_stats_smoke.npz" if args.smoke else "raw_stats.npz")
 
     loader = get_image_loader(args.n_images, args.img_size, args.data_root, args.smoke)
     images_for_maps = next(iter(loader))[0][: args.n_maps]  # same images every model sees first
 
-    stats = run_all_models(args.sizes, loader, device, args.n_maps, args.smoke)
-    table = summarise(stats, args.sizes, args.cutoff_mult)
-    make_figures(stats, table, args.sizes, images_for_maps)
+    if args.reuse:
+        if not raw_path.exists():
+            raise SystemExit(f"--reuse given but {raw_path} does not exist; run without --reuse first.")
+        stats = load_stats(raw_path)
+        missing = [s for s in args.sizes if (s, False) not in stats or (s, True) not in stats]
+        if missing:
+            raise SystemExit(f"Saved measurements have no results for sizes {missing}; run without --reuse.")
+    else:
+        stats = run_all_models(args.sizes, loader, device, args.n_maps, args.smoke)
+        save_stats(stats, raw_path)
+
+    table, cutoffs = summarise(stats, args.sizes, args.cutoff_mult)
+    make_figures(stats, table, cutoffs, args.sizes, images_for_maps)
 
     num_patches = stats[(args.sizes[0], False)]["grid_size"] ** 2
     summary = format_summary(table, args.sizes, args, num_patches)

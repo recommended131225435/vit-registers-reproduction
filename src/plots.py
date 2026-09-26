@@ -48,14 +48,18 @@ def plot_sample_batch(images: torch.Tensor, labels: torch.Tensor, path, title: s
 
 
 def plot_training_curves(runs: dict[str, str], path, title: str) -> None:
-    """Train loss and validation accuracy per epoch. `runs` maps a label to a run folder."""
+    """Train loss and validation accuracy per epoch. `runs` maps a label to a run folder.
+
+    With exactly two runs (no registers first, registers second) the usual colours are used.
+    """
     fig, (ax_loss, ax_acc) = plt.subplots(1, 2, figsize=(10, 3.5))
-    for label, run_dir in runs.items():
+    for i, (label, run_dir) in enumerate(runs.items()):
+        colour = [NO_REG_COLOUR, REG_COLOUR][i] if len(runs) == 2 else None
         with open(Path(run_dir) / "log.csv") as f:
             rows = list(csv.DictReader(f))
         epochs = [int(r["epoch"]) for r in rows]
-        ax_loss.plot(epochs, [float(r["train_loss"]) for r in rows], marker="o", label=label)
-        ax_acc.plot(epochs, [float(r["val_acc"]) for r in rows], marker="o", label=label)
+        ax_loss.plot(epochs, [float(r["train_loss"]) for r in rows], marker="o", color=colour, label=label)
+        ax_acc.plot(epochs, [float(r["val_acc"]) for r in rows], marker="o", color=colour, label=label)
     ax_loss.set(title="train loss", xlabel="epoch")
     ax_acc.set(title="validation accuracy", xlabel="epoch")
     ax_loss.legend()
@@ -66,11 +70,13 @@ def plot_training_curves(runs: dict[str, str], path, title: str) -> None:
 # ----------------------------------------------------------------------------
 # Part A: DINOv2 analysis
 # ----------------------------------------------------------------------------
-def plot_norm_histograms(stats: dict, sizes: list[str], key: str, cutoffs: dict, title: str, path) -> None:
+def plot_norm_histograms(stats: dict, sizes: list[str], key: str, title: str, path,
+                         cutoffs: dict | None = None) -> None:
     """Paper Fig 3 / Fig 7: distribution of patch-token norms, without vs with registers.
 
-    `stats[(size, has_registers)][key]` holds the norms. The y-axis is logarithmic
+    stats[(size, has_registers)][key] holds the norms. The y-axis is logarithmic
     so that the few outliers stay visible next to the many normal tokens.
+    cutoffs[(size, has_registers)], if given, is drawn as a dashed line per model.
     """
     fig, axes = plt.subplots(1, len(sizes), figsize=(4.2 * len(sizes), 3.4), squeeze=False)
     for ax, size in zip(axes[0], sizes):
@@ -78,10 +84,12 @@ def plot_norm_histograms(stats: dict, sizes: list[str], key: str, cutoffs: dict,
         bins = np.linspace(0, max(no_reg.max(), reg.max()) * 1.02, 80)
         ax.hist(no_reg, bins=bins, density=True, alpha=0.6, color=NO_REG_COLOUR, label="no registers")
         ax.hist(reg, bins=bins, density=True, alpha=0.6, color=REG_COLOUR, label="4 registers")
-        ax.axvline(cutoffs[size], ls="--", c="k", lw=1, label=f"cutoff {cutoffs[size]:.0f}")
+        if cutoffs is not None:
+            ax.axvline(cutoffs[(size, False)], ls="--", c=NO_REG_COLOUR, lw=1.2, label="cutoff, no reg")
+            ax.axvline(cutoffs[(size, True)], ls="--", c=REG_COLOUR, lw=1.2, label="cutoff, 4 reg")
         ax.set(yscale="log", title=f"DINOv2 ViT-{size}/14", xlabel="L2 norm of patch token")
     axes[0][0].set_ylabel("density (log scale)")
-    axes[0][0].legend(fontsize=8)
+    axes[0][0].legend(fontsize=7)
     fig.suptitle(title)
     _save(fig, path)
 
@@ -117,7 +125,8 @@ def plot_neighbour_cosine(norms: np.ndarray, cosine: np.ndarray, cutoff: float, 
 def plot_maps(stats: dict, sizes: list[str], images: torch.Tensor, kind: str, title: str, path) -> None:
     """Paper Fig 1 / Fig 21: one row per image, one column per model (no reg, reg for each size).
 
-    kind = "attention" shows [CLS] attention maps; kind = "norm" shows patch-token norms.
+    kind = "attention" shows [CLS] attention maps; kind = "norm" shows patch-token norms
+    (before the final LayerNorm).
     """
     if kind not in ("attention", "norm"):
         raise ValueError("kind must be 'attention' or 'norm'")
@@ -131,7 +140,7 @@ def plot_maps(stats: dict, sizes: list[str], images: torch.Tensor, kind: str, ti
             for has_registers in (False, True):
                 s = stats[(size, has_registers)]
                 grid = s["grid_size"]
-                heatmap = s["attn_maps"][row] if kind == "attention" else s["norm_post"][row].reshape(grid, grid)
+                heatmap = s["attn_maps"][row] if kind == "attention" else s["patch_norm"][row].reshape(grid, grid)
                 axes[row][col].imshow(heatmap, cmap="viridis")
                 if row == 0:
                     axes[row][col].set_title(f"ViT-{size}\n{'4 reg' if has_registers else 'no reg'}", fontsize=8)
