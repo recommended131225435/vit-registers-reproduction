@@ -12,7 +12,7 @@ Large Vision Transformers (DINOv2, CLIP, DeiT-III) show bright spots in their at
 
 | Part | What | Status |
 |---|---|---|
-| **A** | Reproduce the paper's diagnostic findings (Fig 1, 3, 4c, 5a, 7, 15) on the **official pretrained DINOv2 models**, with and without registers. No training needed. | Code ready: `scripts/run_part_a.py` |
+| **A** | Reproduce the paper's diagnostic findings (Fig 1, 3, 4c, 5a, 7, 15) on the **official pretrained DINOv2 models**, with and without registers. No training needed. | Done: `scripts/run_part_a.py`, results in section 6 |
 | **B** | **Our own ViT implementation with a register option**, a Tiny-ImageNet data pipeline, and a training script. Train small ViTs with 0 vs 4 registers. | Pipeline, model and forward pass done. Full training runs in Week 4. |
 | Experiment | *At what model size do high-norm artifacts appear, and do registers change anything below that size?* | Week 4 |
 | Deployment | FastAPI app: upload an image, see attention maps without vs with registers | Week 5 |
@@ -92,7 +92,36 @@ Every script has a quick code-test mode that uses random data instead of downloa
 Output of `python -m scripts.check_forward_pass` on the real dataset:
 
 <!-- FORWARD_CHECK_START -->
-*Not run yet. Run `python -m scripts.check_forward_pass` (or the Colab notebook) and this section fills itself in.*
+Data: Tiny-ImageNet. Model: ViT-Tiny (192-dim, 12 blocks, 3 heads, 8x8 patches, 64 patch tokens). Batch size 64. Device `cuda` (Tesla T4), Python 3.13.15, torch 2.11.0+cu128.
+
+| Check | Result | Detail |
+|---|---|---|
+| Train set size | PASS | 100,000 images |
+| Val set size | PASS | 10,000 images |
+| Train batch shape | PASS | (64, 3, 64, 64) |
+| Val batch shape | PASS | (64, 3, 64, 64) |
+| Labels in [0, 199] | PASS | min 0, max 197 |
+| Pixels normalised (mean near 0, std near 1) | PASS | mean -0.110, std 1.170 |
+| [0 reg] logits shape | PASS | (64, 200) |
+| [0 reg] loss is finite | PASS | 5.3739 |
+| [0 reg] starting loss close to ln(200) | PASS | 5.374 vs 5.298 |
+| [0 reg] every parameter gets a finite gradient | PASS |  |
+| [0 reg] sequence length = 1 + R + 64 | PASS | 65 = 1 + 0 + 64 |
+| [0 reg] registers split off at output | PASS | reg (64, 0, 192), patch (64, 64, 192) |
+| [0 reg] attention weights sum to 1 | PASS | attention shape (64, 3, 65, 65) |
+| [0 reg] step-by-step attention == fast attention | PASS | max difference 4.8e-07 |
+| [4 reg] logits shape | PASS | (64, 200) |
+| [4 reg] loss is finite | PASS | 5.2905 |
+| [4 reg] starting loss close to ln(200) | PASS | 5.291 vs 5.298 |
+| [4 reg] every parameter gets a finite gradient | PASS |  |
+| [4 reg] registers receive gradient | PASS | grad norm 2.59e+00 |
+| [4 reg] sequence length = 1 + R + 64 | PASS | 69 = 1 + 4 + 64 |
+| [4 reg] registers split off at output | PASS | reg (64, 4, 192), patch (64, 64, 192) |
+| [4 reg] attention weights sum to 1 | PASS | attention shape (64, 3, 69, 69) |
+| [4 reg] step-by-step attention == fast attention | PASS | max difference 9.5e-07 |
+| Registers add exactly R x 192 parameters | PASS | 5,427,080 -> 5,427,848 (+768) |
+
+**24/24 checks passed.**
 <!-- FORWARD_CHECK_END -->
 
 ![Tiny-ImageNet samples](results/figures/tinyimagenet_samples.png)
@@ -105,21 +134,50 @@ Output of `python -m scripts.check_forward_pass` on the real dataset:
 
 We load Meta's released DINOv2 checkpoints (ViT-S/B/L/g with patch size 14, each with and without 4 registers). We run them on 256 Imagenette validation images, and measure:
 
-| Paper claim | Paper evidence | Our evidence |
-|---|---|---|
-| Some patch tokens have a much larger norm (two separate humps in the histogram) | Fig 3 | `part_a_norm_histograms.png` |
-| The outliers appear only in larger models | Fig 4c | `part_a_outliers_by_size.png` |
-| Outliers sit on patches that are very similar to their neighbours | Fig 5a | `part_a_neighbour_cosine.png` |
-| Registers remove the outliers | Fig 7 | histograms + table below |
-| Registers give clean attention maps | Fig 1, 19 | `part_a_attention_maps.png` |
-| With registers, the high norms move into the register tokens | Fig 15 | register-norm table below |
+| Paper claim | Paper evidence | Our evidence | Matches paper? |
+|---|---|---|---|
+| Some patch tokens have a much larger norm (two separate humps in the histogram) | Fig 3 | `part_a_norm_histograms.png` | **Yes.** ViT-g: 2.62% of tokens above 150 (paper: 2.37%) |
+| Registers remove the outliers | Fig 7 | histograms + table below | **Yes.** ViT-g: 2.62% → 0.00% |
+| Outliers sit on patches that are very similar to their neighbours | Fig 5a | `part_a_neighbour_cosine.png` | **Yes.** ViT-g: 0.871 vs 0.662 for normal patches |
+| Registers give clean attention maps | Fig 1, 19 | `part_a_attention_maps.png` | **Yes** |
+| With registers, the high norms move into the register tokens | Fig 15 | register-norm table below | **Yes.** ViT-g: one register at 1389.6 vs 107.8 for a typical patch |
+| The outliers appear only in larger models | Fig 4c | `part_a_outliers_by_size.png` | **Partly.** Only ViT-g (and a tiny tail in ViT-B); the paper also finds them in ViT-L |
 
 **How we find outliers:** We use the L2 norm (vector length) of each patch token at the output of the last transformer block, **before the model's final LayerNorm**. The final LayerNorm rescales every token to a similar length, which hides the outliers; our first run measured after it and found none (see `part_a_norm_histograms_after_layernorm.png`). A token is an outlier if its norm is more than 3 times the median norm of the same model. We judge each model against its own typical token because different models have very different typical norms. For ViT-g we also apply the paper's own hand-picked cutoff of 150.
 
 **How we get attention maps:** A hook captures the input to the last attention layer. We recompute `softmax(q·kᵀ/√d)` and take the [CLS] row over the patch tokens, averaged over heads. We checked this against the DINOv2 module: recomputing the full attention output this way matches the module's own output to within 1e-7.
 
 <!-- PART_A_START -->
-*Not run yet. Run `python -m scripts.run_part_a` (or the Colab notebook) and this section fills itself in.*
+Setup: official DINOv2 checkpoints (torch.hub), 256 Imagenette validation images at 224x224 (256 patches each). Norms are measured on the output of the last transformer block, before the final LayerNorm. An outlier is a patch token whose norm is more than 3 x the median norm of the same model.
+
+| Model | Median norm (no reg / 4 reg) | Max norm (no reg / 4 reg) | % outliers, no reg | % outliers, 4 reg | Neighbour similarity, outlier vs normal (no reg) |
+|---|---|---|---|---|---|
+| ViT-S/14 | 20.1 / 58.8 | 29.7 / 88.6 | 0.00% | 0.00% | n/a vs 0.615 |
+| ViT-B/14 | 53.9 / 138.9 | 252.2 / 216.8 | 0.20% | 0.00% | 0.884 vs 0.608 |
+| ViT-L/14 | 84.7 / 254.8 | 145.2 / 420.4 | 0.00% | 0.00% | n/a vs 0.502 |
+| ViT-g/14 | 49.6 / 107.8 | 560.6 / 286.7 | 2.62% | 0.00% | 0.871 vs 0.662 |
+
+With the paper's own cutoff (norm > 150) on ViT-g: **2.62%** of patch tokens without registers (paper reports 2.37%). This cutoff is only meaningful for the no-register model, which is what the paper applied it to.
+
+Why before the final LayerNorm: the LayerNorm rescales every token to a similar length. Largest token norm divided by the median norm:
+
+| Model | before LayerNorm (no reg / 4 reg) | after LayerNorm (no reg / 4 reg) |
+|---|---|---|
+| ViT-S/14 | 1.48x / 1.51x | 1.17x / 1.28x |
+| ViT-B/14 | 4.68x / 1.56x | 1.41x / 1.20x |
+| ViT-L/14 | 1.71x / 1.65x | 1.24x / 1.19x |
+| ViT-g/14 | 11.30x / 2.66x | 1.08x / 1.11x |
+
+Average norms in the register models, before the final LayerNorm (where do the high norms go? cf. paper Fig 15b):
+
+| Model | [CLS] | reg_0 | reg_1 | reg_2 | reg_3 | median patch |
+|---|---|---|---|---|---|---|
+| ViT-S/14 + reg | 42.7 | 43.9 | 159.8 | 42.4 | 40.1 | 58.8 |
+| ViT-B/14 + reg | 132.7 | 104.5 | 230.1 | 104.5 | 284.5 | 138.9 |
+| ViT-L/14 + reg | 196.7 | 762.2 | 128.1 | 170.0 | 170.4 | 254.8 |
+| ViT-g/14 + reg | 150.9 | 299.2 | 150.7 | 1389.6 | 64.4 | 107.8 |
+
+Figures: `results/figures/part_a_*.png`
 <!-- PART_A_END -->
 
 ![Norm histograms](results/figures/part_a_norm_histograms.png)
@@ -131,11 +189,13 @@ We load Meta's released DINOv2 checkpoints (ViT-S/B/L/g with patch size 14, each
 
 ### What Part A shows
 
-- **High-norm tokens (Fig 3): reproduced for ViT-g.** Without registers, ViT-g's patch-token norms form two separate humps: most tokens sit below ~150 and a small group sits between roughly 300 and 560. About 2.6% of tokens are above the paper's cutoff of 150, against 2.37% in the paper.
-- **Registers remove them (Fig 7): reproduced.** The ViT-g model with registers has no second hump.
-- **Attention maps (Fig 1): reproduced.** Without registers, ViT-B, L and g show bright spots on background patches (for example image corners). With registers, attention sits on the object. ViT-S is clean in both versions, in line with the paper's finding that small models don't have artifacts.
-- **Model size (Fig 4c): partly reproduced.** Clear high-norm outliers appear only in ViT-g (ViT-B has a very small tail, S and L none). The paper finds outliers from ViT-L upwards. A likely reason: Meta's released S, B and L models were distilled from ViT-g rather than trained on their own as in the paper's Fig 4c. ViT-L still shows attention-map artifacts, so the behaviour is not fully gone in it.
-- **The final LayerNorm hides the outliers.** After it, the largest token is only slightly longer than a typical one in every model. The paper's norms must therefore be measured before this layer.
+- **High-norm tokens (Fig 3): reproduced.** Without registers, ViT-g's patch-token norms form two separate humps: most tokens sit below 150, and a small group sits between roughly 300 and 560. 2.62% of tokens are above the paper's cutoff of 150; the paper reports 2.37%.
+- **Registers remove them (Fig 7): reproduced.** With registers, ViT-g has no second hump and 0.00% outliers. The same holds for every model size.
+- **Outliers sit on redundant patches (Fig 5a): reproduced.** Right after the patch embedding, ViT-g's outlier patches have an average similarity of 0.871 to their neighbours, against 0.662 for normal patches, with a sharp peak at 1.0 as in the paper. In ViT-B it is 0.884 vs 0.608.
+- **Clean attention maps (Fig 1): reproduced.** Without registers, ViT-B, L and g show bright spots on background patches, often at the image edges. With registers, attention sits on the object. ViT-S is clean in both versions, in line with the paper's finding that small models don't have artifacts. The norm maps (Fig 21) show high-norm spots at the same positions as the attention spots.
+- **High norms move into the registers (Fig 15): reproduced.** In every register model, one register has a clearly larger norm than a typical patch token. For example, ViT-g's reg_2 is at 1389.6 against 107.8 for the median patch, and ViT-L's reg_0 is at 762.2 against 254.8. As in the paper, the registers differ from each other.
+- **Model size (Fig 4c): partly reproduced.** Clear high-norm outliers appear only in ViT-g; ViT-B has a very small tail (0.20%), and S and L have none. The paper finds outliers from ViT-L upwards. A likely reason: Meta's released S, B and L models were distilled from ViT-g, whereas the paper's Fig 4c trains each size on its own. ViT-L still shows attention-map artifacts, so the behaviour is weakened in it rather than fully absent.
+- **The final LayerNorm hides the outliers.** In ViT-g the largest token is 11.3x the median norm before the final LayerNorm, but only 1.08x after it. The paper's norms must therefore be measured before this layer, which is what we do.
 
 ## 7. Differences from the paper
 
