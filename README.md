@@ -13,7 +13,7 @@ Large Vision Transformers (DINOv2, CLIP, DeiT-III) show bright spots in their at
 | Part | What | Status |
 |---|---|---|
 | **A** | Reproduce the paper's diagnostic findings (Fig 1, 3, 4c, 5a, 7, 15) on the **official pretrained DINOv2 models**, with and without registers. No training needed. | Done: `scripts/run_part_a.py`, results in section 6 |
-| **B** | **Our own ViT implementation with a register option**, a Tiny-ImageNet data pipeline, and a training script. Train small ViTs with 0 vs 4 registers. | Pipeline, model and forward pass done. Full training runs in Week 4. |
+| **B** | **Our own ViT implementation with a register option**, a Tiny-ImageNet data pipeline, and a training script. Train small ViTs with 0 vs 4 registers. | Pipeline, model and forward pass done. Full training runs: see section 5. |
 | Experiment | *At what model size do high-norm artifacts appear, and do registers change anything below that size?* | Week 4 |
 | Deployment | FastAPI app: upload an image, see attention maps without vs with registers | Week 5 |
 
@@ -33,10 +33,12 @@ src/
 
 scripts/
 ├── check_forward_pass.py   Week 3 check: data -> model -> loss -> gradients (24 checks)
-└── run_part_a.py           Part A: analysis of pretrained DINOv2 models
+├── run_part_a.py           Part A: analysis of pretrained DINOv2 models
+└── summarise_training.py   Results table + graph for the full training runs
 
 tests/                      Unit tests for the model and the measurements
-notebooks/milestone2_colab.ipynb   Runs everything on Google Colab
+notebooks/milestone2_colab.ipynb   Runs everything for milestone 2 on Google Colab
+notebooks/full_training_colab.ipynb Full 50-epoch training runs (0 vs 4 registers)
 results/
 ├── figures/     all plots
 ├── logs/        forward pass check report
@@ -130,6 +132,14 @@ Data: Tiny-ImageNet. Model: ViT-Tiny (192-dim, 12 blocks, 3 heads, 8x8 patches, 
 
 ![Sanity runs](results/figures/sanity_runs.png)
 
+### Full training runs: 0 vs 4 registers
+
+ViT-Tiny trained on all 100,000 Tiny-ImageNet training images for 50 epochs, once without and once with 4 registers, same settings and seed otherwise. Run with `notebooks/full_training_colab.ipynb`.
+
+<!-- FULL_TRAINING_START -->
+*Not run yet. Run `notebooks/full_training_colab.ipynb` and this section fills itself in.*
+<!-- FULL_TRAINING_END -->
+
 ## 6. Part A: reproducing the paper's findings on pretrained DINOv2
 
 We load Meta's released DINOv2 checkpoints (ViT-S/B/L/g with patch size 14, each with and without 4 registers). We run them on 256 Imagenette validation images, and measure:
@@ -214,7 +224,7 @@ Figures: `results/figures/part_a_*.png`
 
 ## 8. Next steps
 
-- **Week 4:** full 50-epoch runs, ViT-Tiny with 0 vs 4 registers (accuracy, norm histograms, attention maps). Then the scaling experiment: Tiny / Small / Base, with vs without registers.
+- **Week 4:** measure our trained ViTs the same way as Part A (token norms, attention maps). Then the scaling experiment: Tiny / Small / Base, with vs without registers.
 - **Week 5:** FastAPI deployment, final report and presentation.
 
 ## 9. Provenance

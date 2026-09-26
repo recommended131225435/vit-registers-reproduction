@@ -15,8 +15,8 @@ Tags:
 | `src/analysis.py`: norms, neighbour similarity, outlier rule | Written | Measurements designed to mirror the paper's Fig 3, 4c, 5a, 7, 15. |
 | `src/analysis.py`: `cls_attention_map` | Adapted | Same maths as `Attention.forward` in DINOv2 (`dinov2/layers/attention.py`), rewritten to return the attention weights. Tested against our own model's attention (`tests/test_analysis.py`). |
 | `src/plots.py`, `src/report.py`, `src/utils.py` | Written | |
-| `scripts/check_forward_pass.py`, `scripts/run_part_a.py` | Written | |
-| `tests/`, `notebooks/milestone2_colab.ipynb` | Written | |
+| `scripts/check_forward_pass.py`, `scripts/run_part_a.py`, `scripts/summarise_training.py` | Written | |
+| `tests/`, `notebooks/milestone2_colab.ipynb`, `notebooks/full_training_colab.ipynb` | Written | |
 | DINOv2 model code and pretrained weights | Reused | Loaded unchanged with `torch.hub.load("facebookresearch/dinov2", ...)`. Apache-2.0 licence. |
 | Tiny-ImageNet dataset | Reused | http://cs231n.stanford.edu/tiny-imagenet-200.zip |
 | Imagenette dataset | Reused | Through `torchvision.datasets.Imagenette` (fast.ai). |

@@ -24,7 +24,12 @@ Saved in --out:
     config.json     all settings of the run
     log.csv         one row per epoch (loss, accuracy, learning rate, time)
     final.json      final validation accuracy and loss
-    checkpoint.pt   model weights after the last epoch
+    checkpoint.pt   model + optimiser state after the last finished epoch
+
+Resuming: with --resume, if --out already has a checkpoint.pt, training continues
+from the last finished epoch instead of starting again (useful if Colab
+disconnects). A resumed run gives the same schedule, but not bit-identical
+numbers, because the random data order after the restart differs.
 """
 
 import argparse
@@ -68,6 +73,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=2)
     # output
     p.add_argument("--out", default="results/runs/run")
+    p.add_argument("--resume", action="store_true", help="continue from --out/checkpoint.pt if it exists")
     args = p.parse_args(argv)
     if args.epochs < 1:
         p.error("--epochs must be at least 1")
@@ -162,6 +168,32 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion, device) -> tuple[f
 
 
 # ----------------------------------------------------------------------------
+# Saving and resuming
+# ----------------------------------------------------------------------------
+def save_checkpoint(path: Path, model, optimizer, scheduler, scaler, config: dict,
+                    epoch: int, step: int, val_loss: float, val_acc: float) -> None:
+    """Save everything needed to continue training. Written to a temporary file first,
+    so a disconnect during saving can never leave a broken checkpoint behind."""
+    state = {
+        "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
+        "config": config, "epoch": epoch, "step": step, "val_loss": val_loss, "val_acc": val_acc,
+    }
+    tmp_path = path.with_suffix(".tmp")
+    torch.save(state, tmp_path)
+    tmp_path.replace(path)
+
+
+def trim_log(log_path: Path, last_epoch: int) -> None:
+    """Keep only the log rows up to `last_epoch` (drops a row written just before a disconnect)."""
+    with open(log_path, newline="") as f:
+        rows = list(csv.reader(f))
+    kept = [rows[0]] + [r for r in rows[1:] if r and int(r[0]) <= last_epoch]
+    with open(log_path, "w", newline="") as f:
+        csv.writer(f).writerows(kept)
+
+
+# ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
 def main(argv=None) -> dict:
@@ -194,20 +226,36 @@ def main(argv=None) -> dict:
     scheduler = build_scheduler(optimizer, warmup_steps, total_steps)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")  # needed for mixed precision
 
-    # 4. Save the settings of this run
+    # 4. Save the settings of this run (or pick up where a previous run stopped)
     config = vars(args) | {
         "device": str(device), "params": count_params(model), "torch": torch.__version__,
         "steps_per_epoch": steps_per_epoch, "total_steps": total_steps, "warmup_steps": warmup_steps,
     }
     (out_dir / "config.json").write_text(json.dumps(config, indent=2))
-    log_path = out_dir / "log.csv"
-    with open(log_path, "w", newline="") as f:
-        csv.writer(f).writerow(LOG_COLUMNS)
+    log_path, ckpt_path = out_dir / "log.csv", out_dir / "checkpoint.pt"
+
+    start_epoch, step = 1, 0
+    val_loss = val_acc = float("nan")
+    if args.resume and ckpt_path.exists() and log_path.exists():
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        scaler.load_state_dict(ckpt["scaler"])
+        start_epoch, step = ckpt["epoch"] + 1, ckpt["step"]
+        val_loss, val_acc = ckpt["val_loss"], ckpt["val_acc"]
+        trim_log(log_path, ckpt["epoch"])
+        print(f"Resuming from epoch {ckpt['epoch']} (step {step})")
+    else:
+        with open(log_path, "w", newline="") as f:
+            csv.writer(f).writerow(LOG_COLUMNS)
     print(f"{args.size} ViT | {args.registers} registers | {count_params(model):,} params | device {device}")
 
     # 5. Train
-    step = 0
-    for epoch in range(1, args.epochs + 1):
+    last_epoch = start_epoch - 1  # last fully finished epoch
+    for epoch in range(start_epoch, args.epochs + 1):
+        if args.max_steps is not None and step >= args.max_steps:
+            break
         start = time.time()
         train_loss, train_acc, step = train_one_epoch(
             model, train_loader, optimizer, scheduler, scaler, criterion, device, step, args.max_steps)
@@ -219,13 +267,11 @@ def main(argv=None) -> dict:
                                     val_loss, val_acc, epoch_time])
         print(f"epoch {epoch:3d} | train loss {train_loss:.3f} acc {train_acc:.3f} | "
               f"val loss {val_loss:.3f} acc {val_acc:.3f} | {epoch_time:.0f}s")
-        torch.save({"model": model.state_dict(), "config": config, "epoch": epoch}, out_dir / "checkpoint.pt")
-
-        if args.max_steps is not None and step >= args.max_steps:
-            break
+        save_checkpoint(ckpt_path, model, optimizer, scheduler, scaler, config, epoch, step, val_loss, val_acc)
+        last_epoch = epoch
 
     # 6. Final result
-    final = {"val_acc": val_acc, "val_loss": val_loss, "epochs_run": epoch, "steps": step}
+    final = {"val_acc": val_acc, "val_loss": val_loss, "epochs_run": last_epoch, "steps": step}
     (out_dir / "final.json").write_text(json.dumps(final, indent=2))
     print("final:", final)
     return final
