@@ -137,8 +137,26 @@ Data: Tiny-ImageNet. Model: ViT-Tiny (192-dim, 12 blocks, 3 heads, 8x8 patches, 
 ViT-Tiny trained on all 100,000 Tiny-ImageNet training images for 50 epochs, once without and once with 4 registers, same settings and seed otherwise. Run with `notebooks/full_training_colab.ipynb`.
 
 <!-- FULL_TRAINING_START -->
-*Not run yet. Run `notebooks/full_training_colab.ipynb` and this section fills itself in.*
+Validation accuracy after the last epoch (we do not pick the best epoch, because the validation set is also our test set).
+
+| Model | Registers | Parameters | Epochs | Val accuracy | Val loss | Training time (min) |
+|---|---|---|---|---|---|---|
+| ViT-Tiny | 0 | 5,427,080 | 50 | **38.99%** | 3.537 | 75 |
+| ViT-Tiny | 4 | 5,427,848 | 50 | **37.86%** | 3.592 | 75 |
+
+Effect of adding registers: **-1.13 percentage points**. Paper (Table 2a, ImageNet top-1): DeiT-III 84.7 → 84.7, OpenCLIP 78.2 → 78.1, DINOv2 84.3 → 84.8, i.e. registers do not hurt accuracy. Our absolute accuracies are not comparable with the paper's (different dataset, much smaller model, shorter training); only the with/without-registers difference is. Each setting was trained once (seed 0), so differences of a few tenths of a point may be random variation.
+
+![Full training runs](results/figures/full_training_runs.png)
 <!-- FULL_TRAINING_END -->
+
+**What the training runs show**
+
+- **Both models learn the same way.** The training-loss curves lie on top of each other, and both end at about 91.5% training accuracy.
+- **Final validation accuracy: 38.99% without registers, 37.86% with 4 registers (−1.13 points).** The gap is steady rather than a one-epoch fluke: averaged over the last 10 epochs it is 38.99% vs 37.90%. Before epoch 20 the two runs are level, and the register model is even slightly ahead at epoch 10.
+- **Compared with the paper:** at large scale the paper finds registers change ImageNet accuracy by −0.1 to +0.5 points (Table 2a). Our drop is larger, so this claim is only **partly** reproduced: there is no big accuracy cost, but we cannot rule out a small one.
+- **Why we can't say more yet:** each setting was trained once (seed 0), and the register run was paused and resumed once after epoch 14, which changes the order of the training images afterwards. A 1-point gap can come from this kind of randomness alone; training a second seed of each setting would tell us.
+- **A possible explanation (to be tested):** the paper reports that artifacts only appear in large models trained for a long time. A ViT-Tiny on 64x64 images may have no artifacts at all, in which case registers have no job to do and only add four extra tokens to the attention. In Week 4 we will measure our trained models the same way as Part A to check whether they contain high-norm tokens.
+- **Both models overfit:** training accuracy (91.5%) is far above validation accuracy (38–39%). This is typical for small ViTs trained from scratch on 100k images; stronger augmentation (Mixup, CutMix, RandAugment) would likely reduce it. Since both runs use identical settings, the comparison between them stays fair.
 
 ## 6. Part A: reproducing the paper's findings on pretrained DINOv2
 
