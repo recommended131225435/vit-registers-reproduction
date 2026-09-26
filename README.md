@@ -8,6 +8,26 @@ Course project (Machine Learning, IBA Karachi): paper reproduction, experiment a
 
 Large Vision Transformers (DINOv2, CLIP, DeiT-III) show bright spots in their attention maps on empty background areas. The authors show these spots are patch tokens with a very large norm (about 10x normal). These tokens have lost the information about their own patch and instead hold information about the whole image. Their explanation: the model needs extra space for global computation, and without any, it takes over patches it considers useless. The fix is to add a few extra learnable tokens ("registers") to the input that the model can use as scratch space. These tokens are thrown away at the output. With registers, the artifacts disappear and dense tasks improve.
 
+### Background and related work
+
+**What came before.** A Vision Transformer (ViT, Dosovitskiy et al., 2021) cuts an image into patches, turns each patch into a token, and adds a [CLS] token that collects a summary of the whole image. Adding extra tokens to a transformer was already common: BERT uses [CLS] and [SEP] tokens, and DETR uses "object queries". In all of these, the extra tokens either carry information in or are read out as a result. The closest idea is the **Memory Transformer** (Burtsev et al., 2020), which added blank "memory" tokens to a language model and improved translation. Sandler et al. (2022) tried learnable memory tokens for fine-tuning ViTs, but found they did not transfer well between tasks.
+
+For vision, the key background is self-supervised learning. **DINO** (Caron et al., 2021) showed that a ViT trained without labels produces clean attention maps that outline objects. **LOST** (Siméoni et al., 2021) used those maps to find objects without any labels. **DINOv2** (Oquab et al., 2023) gave much better features overall, but LOST worked poorly on it. That puzzle is the starting point of this paper. **MAE** (He et al., 2022), trained only to rebuild hidden patches, shows no artifacts.
+
+**What was missing.** Nobody had explained why DINOv2, CLIP and supervised ViTs (DeiT-III) have noisy attention maps while DINO does not, or offered a fix. Earlier work treated extra tokens as an add-on to gain accuracy, not as a remedy for a problem inside the model.
+
+**What this paper adds.**
+1. A diagnosis: the artifacts are a small number (about 2%) of patch tokens with a very large norm. They appear on redundant background patches, only in large models trained for long, and they store global rather than local information.
+2. An explanation: the model reuses useless patches as scratch space.
+3. A simple fix: add a few "register" tokens that are thrown away at the output. With 4 registers this costs less than 2% extra compute, and it works across supervised, text-supervised and self-supervised training.
+
+**What came after.** Meta released DINOv2 models with registers, which we use in Part A. Later work has questioned and extended the explanation:
+- **Sun et al. (2024), "Massive Activations"**, find very large activations in both language models and ViTs. They argue these act as fixed bias terms inside attention, and describe registers as learned biases rather than storage for global information.
+- **Yang et al. (2024), "Denoising Vision Transformers"**, study a different artifact: a grid-like pattern in ViT features that they trace to the position embeddings. They remove it after training with a small learned denoiser, and their method also improves DINOv2 models trained with registers. So registers do not fix every kind of artifact.
+- **Jiang et al. (2025), "Vision Transformers Don't Need Trained Registers"**, find a few specific neurons that create the high-norm tokens. By moving those activations into one extra, untrained token at test time, they get most of the benefit of registers without retraining the model.
+
+**How our project relates.** Part A repeats the paper's diagnosis on the released models. Our finding that the high norms are only visible before the final LayerNorm fits with this later work, which measures norms inside the network rather than on the final output. Part B asks whether the behaviour appears at all in small ViTs trained from scratch; the paper's size result (Fig 4c) suggests it may not.
+
 ## 2. What this repository does
 
 | Part | What | Status |
@@ -48,6 +68,25 @@ requirements.txt        minimum library versions
 requirements-lock.txt   exact versions used on Colab (created by the notebook)
 PROVENANCE.md           where every piece of code came from
 ```
+
+### Workflow we followed
+
+```mermaid
+flowchart LR
+    A["Read paper and write proposal"] --> B["Part A: check the paper's claims on Meta's released models"]
+    A --> C["Build our ViT with registers + unit tests"]
+    C --> D["Forward pass check: 24 checks on real data"]
+    D --> E["Sanity runs: 10k images, 5 epochs"]
+    E --> F["Full runs: 100k images, 50 epochs, 0 vs 4 registers"]
+    B --> G["Results written into README automatically"]
+    F --> G
+```
+
+1. **Part A first.** Before training anything, we checked the paper's claims on the exact models it studied. This is cheap (about 20 minutes on a free GPU) and showed us how to measure the artifacts correctly: our first attempt measured after the final LayerNorm and found nothing, which we caught and fixed.
+2. **Build and test the model before training.** Our ViT has 9 unit tests (for example: registers get no position embedding, and our step-by-step attention matches PyTorch's fast version).
+3. **Forward pass on real data.** 24 automatic checks: data shapes, labels, a starting loss close to ln(200), gradients reaching the registers.
+4. **Small run, then full run.** A 5-epoch run on 10% of the data to catch bugs quickly, then the full 50-epoch runs. Progress is saved after every epoch so a Colab disconnect never loses a run.
+5. **Everything is logged.** Every run saves its settings, a per-epoch log and its final result in `results/`, and the scripts write their results into this README. `PROVENANCE.md` records where each piece of code came from.
 
 ## 4. How to run
 
@@ -251,9 +290,17 @@ See [PROVENANCE.md](PROVENANCE.md) for a file-by-file record of what was written
 
 ## References
 
-- Darcet et al. *Vision Transformers Need Registers.* ICLR 2024.
-- Oquab et al. *DINOv2: Learning Robust Visual Features without Supervision.* TMLR 2024. Code and weights: https://github.com/facebookresearch/dinov2
-- Dosovitskiy et al. *An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale.* ICLR 2021.
-- Touvron et al. *Training data-efficient image transformers & distillation through attention (DeiT).* ICML 2021.
-- Le & Yang. *Tiny ImageNet Visual Recognition Challenge.* CS231N, 2015.
+- Darcet, T., Oquab, M., Mairal, J., Bojanowski, P. *Vision Transformers Need Registers.* ICLR 2024.
+- Dosovitskiy, A. et al. *An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale.* ICLR 2021.
+- Burtsev, M. et al. *Memory Transformer.* arXiv:2006.11527, 2020.
+- Sandler, M. et al. *Fine-tuning Image Transformers using Learnable Memory.* CVPR 2022.
+- Caron, M. et al. *Emerging Properties in Self-Supervised Vision Transformers (DINO).* ICCV 2021.
+- Siméoni, O. et al. *Localizing Objects with Self-Supervised Transformers and no Labels (LOST).* BMVC 2021.
+- Oquab, M. et al. *DINOv2: Learning Robust Visual Features without Supervision.* TMLR 2024. Code and weights: https://github.com/facebookresearch/dinov2
+- He, K. et al. *Masked Autoencoders Are Scalable Vision Learners (MAE).* CVPR 2022.
+- Touvron, H. et al. *Training data-efficient image transformers & distillation through attention (DeiT).* ICML 2021.
+- Sun, M., Chen, X., Kolter, J. Z., Liu, Z. *Massive Activations in Large Language Models.* COLM 2024. arXiv:2402.17762
+- Yang, J. et al. *Denoising Vision Transformers.* ECCV 2024. arXiv:2401.02957
+- Jiang, N., Dravid, A., Efros, A. A., Gandelsman, Y. *Vision Transformers Don't Need Trained Registers.* NeurIPS 2025. arXiv:2506.08010
+- Le, Y., Yang, X. *Tiny ImageNet Visual Recognition Challenge.* CS231N, 2015.
 - Imagenette: https://github.com/fastai/imagenette
