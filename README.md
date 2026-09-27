@@ -86,7 +86,7 @@ scripts/
 
 tests/                      Unit tests for the model and the measurements
 notebooks/milestone2_colab.ipynb   Runs everything for milestone 2 on Google Colab
-notebooks/full_training_colab.ipynb Full 50-epoch training runs (0 vs 4 registers; Week 4 runs included)
+notebooks/full_training_colab.ipynb Full 50-epoch training runs (0 vs 4 registers)
 .github/workflows/tests.yml         Runs the unit tests and a forward-pass check on every push
 results/
 ├── figures/     all plots
