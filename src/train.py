@@ -8,6 +8,14 @@ Training recipe (standard for training small ViTs from scratch, following DeiT):
     - Extras:     stochastic depth 0.1, gradient clipping at 1.0,
                   mixed precision on GPU (faster, uses less memory)
 
+Augmentation (--aug):
+    basic   random crop + flip (default)
+    strong  basic + RandAugment + random erasing, and on every batch either
+            MixUp (blend two images and their labels) or CutMix (paste a patch of
+            one image onto another and mix the labels by area). Used to reduce
+            overfitting. With MixUp/CutMix, "train acc" counts a prediction as right
+            if it matches the image that makes up most of the mixed picture.
+
 We report the model from the LAST epoch. We do not pick the "best" epoch,
 because the validation set is also our test set; picking the best epoch on it
 would make the score look better than it really is.
@@ -42,6 +50,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torchvision.transforms import v2
 
 from src.data import NUM_CLASSES, get_dataloaders
 from src.utils import count_params, get_device, set_seed
@@ -56,6 +65,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--size", default="tiny", choices=list(MODEL_SIZES))
     p.add_argument("--registers", type=int, default=0, help="number of register tokens (paper uses 4)")
     p.add_argument("--drop-path", type=float, default=0.1)
+    p.add_argument("--aug", default="basic", choices=["basic", "strong"], help="training augmentation")
     # training
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=256)
@@ -110,23 +120,36 @@ def build_scheduler(optimizer, warmup_steps: int, total_steps: int):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_multiplier)
 
 
+def build_batch_mixer(num_classes: int):
+    """Picks MixUp or CutMix at random for each batch (settings from DeiT). Returns soft labels."""
+    return v2.RandomChoice([v2.MixUp(alpha=0.8, num_classes=num_classes),
+                            v2.CutMix(alpha=1.0, num_classes=num_classes)])
+
+
 # ----------------------------------------------------------------------------
 # One pass over the data
 # ----------------------------------------------------------------------------
 def train_one_epoch(model, loader, optimizer, scheduler, scaler, criterion, device,
-                    step: int, max_steps: int | None) -> tuple[float, float, int]:
-    """Train for one epoch. Returns (average loss, accuracy, step count so far)."""
+                    step: int, max_steps: int | None, mixer=None) -> tuple[float, float, int]:
+    """Train for one epoch. Returns (average loss, accuracy, step count so far).
+
+    mixer: optional MixUp/CutMix; if given, labels become mixed "soft" labels.
+    """
     model.train()
     use_amp = device.type == "cuda"
     seen, correct, loss_sum = 0, 0, 0.0
 
     for images, labels in loader:
         images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+        targets = labels
+        if mixer is not None:
+            images, targets = mixer(images, labels)  # targets: (batch, classes) soft labels
+            labels = targets.argmax(dim=1)          # the image that makes up most of each mix
 
         # Forward pass (in mixed precision on GPU)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
             logits = model(images)
-            loss = criterion(logits, labels)
+            loss = criterion(logits, targets)
         if not torch.isfinite(loss):
             raise RuntimeError(f"Loss became {loss.item()} at step {step}; stopping.")
 
@@ -207,6 +230,7 @@ def main(argv=None) -> dict:
     train_loader, val_loader = get_dataloaders(
         args.data_root, args.batch_size, args.num_workers,
         args.train_subset, args.val_subset, fake=args.fake, seed=args.seed,
+        strong_aug=args.aug == "strong",
     )
 
     # 2. Model
@@ -225,6 +249,7 @@ def main(argv=None) -> dict:
     optimizer = build_optimizer(model, args.lr, args.weight_decay)
     scheduler = build_scheduler(optimizer, warmup_steps, total_steps)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")  # needed for mixed precision
+    mixer = build_batch_mixer(NUM_CLASSES) if args.aug == "strong" else None
 
     # 4. Save the settings of this run (or pick up where a previous run stopped)
     config = vars(args) | {
@@ -249,7 +274,8 @@ def main(argv=None) -> dict:
     else:
         with open(log_path, "w", newline="") as f:
             csv.writer(f).writerow(LOG_COLUMNS)
-    print(f"{args.size} ViT | {args.registers} registers | {count_params(model):,} params | device {device}")
+    print(f"{args.size} ViT | {args.registers} registers | {args.aug} augmentation | "
+          f"{count_params(model):,} params | device {device}")
 
     # 5. Train
     last_epoch = start_epoch - 1  # last fully finished epoch
@@ -258,7 +284,7 @@ def main(argv=None) -> dict:
             break
         start = time.time()
         train_loss, train_acc, step = train_one_epoch(
-            model, train_loader, optimizer, scheduler, scaler, criterion, device, step, args.max_steps)
+            model, train_loader, optimizer, scheduler, scaler, criterion, device, step, args.max_steps, mixer)
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         epoch_time = time.time() - start
 

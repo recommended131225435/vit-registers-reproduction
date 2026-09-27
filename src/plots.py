@@ -47,22 +47,28 @@ def plot_sample_batch(images: torch.Tensor, labels: torch.Tensor, path, title: s
     _save(fig, path)
 
 
-def plot_training_curves(runs: dict[str, str], path, title: str) -> None:
-    """Train loss and validation accuracy per epoch. `runs` maps a label to a run folder.
+def plot_training_curves(runs: dict, path, title: str) -> None:
+    """Train loss and validation accuracy per epoch.
 
-    With exactly two runs (no registers first, registers second) the usual colours are used.
+    `runs` maps a label to either a run folder, or a tuple (run folder, colour, line style).
+    With exactly two plain folders (no registers first, registers second) the usual colours are used.
     """
     fig, (ax_loss, ax_acc) = plt.subplots(1, 2, figsize=(10, 3.5))
-    for i, (label, run_dir) in enumerate(runs.items()):
-        colour = [NO_REG_COLOUR, REG_COLOUR][i] if len(runs) == 2 else None
+    for i, (label, run) in enumerate(runs.items()):
+        if isinstance(run, tuple):
+            run_dir, colour, style = run
+        else:
+            run_dir, style = run, "-"
+            colour = [NO_REG_COLOUR, REG_COLOUR][i] if len(runs) == 2 else None
         with open(Path(run_dir) / "log.csv") as f:
             rows = list(csv.DictReader(f))
         epochs = [int(r["epoch"]) for r in rows]
-        ax_loss.plot(epochs, [float(r["train_loss"]) for r in rows], marker="o", color=colour, label=label)
-        ax_acc.plot(epochs, [float(r["val_acc"]) for r in rows], marker="o", color=colour, label=label)
+        kwargs = dict(color=colour, linestyle=style, marker="o", markersize=3, label=label)
+        ax_loss.plot(epochs, [float(r["train_loss"]) for r in rows], **kwargs)
+        ax_acc.plot(epochs, [float(r["val_acc"]) for r in rows], **kwargs)
     ax_loss.set(title="train loss", xlabel="epoch")
     ax_acc.set(title="validation accuracy", xlabel="epoch")
-    ax_loss.legend()
+    ax_loss.legend(fontsize=8)
     fig.suptitle(title)
     _save(fig, path)
 

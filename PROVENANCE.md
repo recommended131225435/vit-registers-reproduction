@@ -11,7 +11,7 @@ Tags:
 | `src/vit.py`: register tokens | Written | Where registers are inserted (after position embeddings, between [CLS] and patches) and how they are initialised (std 1e-6) follow `prepare_tokens_with_masks` and `init_weights` in [facebookresearch/dinov2](https://github.com/facebookresearch/dinov2) (`dinov2/models/vision_transformer.py`). No code copied. |
 | `src/vit.py`: `DropPath` | Written | Stochastic depth (Huang et al., 2016); behaves like the common timm version. |
 | `src/data.py` | Written | Reads the official Tiny-ImageNet zip layout. Uses torchvision's transforms, `FakeData` and `download_and_extract_archive` (library functions, reused). |
-| `src/train.py` | Written | Training recipe (AdamW, warmup + cosine schedule, label smoothing, stochastic depth) follows DeiT (Touvron et al., 2021) conventions, scaled down. |
+| `src/train.py` | Written | Training recipe (AdamW, warmup + cosine schedule, label smoothing, stochastic depth) follows DeiT (Touvron et al., 2021) conventions, scaled down. The optional strong augmentation uses torchvision's `RandAugment`, `RandomErasing`, `MixUp` and `CutMix` (library functions, reused) with DeiT's settings. |
 | `src/analysis.py`: norms, neighbour similarity, outlier rule | Written | Measurements designed to mirror the paper's Fig 3, 4c, 5a, 7, 15. |
 | `src/analysis.py`: `cls_attention_map` | Adapted | Same maths as `Attention.forward` in DINOv2 (`dinov2/layers/attention.py`), rewritten to return the attention weights. Tested against our own model's attention (`tests/test_analysis.py`). |
 | `src/plots.py`, `src/report.py`, `src/utils.py` | Written | |

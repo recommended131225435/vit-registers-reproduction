@@ -102,21 +102,31 @@ class TinyImageNet(Dataset):
 # ----------------------------------------------------------------------------
 # Preprocessing
 # ----------------------------------------------------------------------------
-def get_transforms(train: bool) -> transforms.Compose:
+def get_transforms(train: bool, strong: bool = False) -> transforms.Compose:
     """Image preprocessing.
 
     Training images get random crops and flips (data augmentation). This shows
     the model slightly different versions of each image, which reduces
     overfitting. Validation images are left unchanged so the score is fair.
+
+    strong=True adds two more augmentations for training images, used to fight
+    overfitting (both are part of the DeiT recipe for training ViTs on small data):
+        RandAugment      2 random edits per image (colour, contrast, rotation, shear, ...)
+        RandomErasing    blanks out a random rectangle in 25% of images
     """
     to_normalised_tensor = [transforms.ToTensor(), transforms.Normalize(MEAN, STD)]
-    if train:
-        return transforms.Compose([
-            transforms.RandomResizedCrop(IMG_SIZE, scale=(0.35, 1.0)),
-            transforms.RandomHorizontalFlip(),
-            *to_normalised_tensor,
-        ])
-    return transforms.Compose(to_normalised_tensor)
+    if not train:
+        return transforms.Compose(to_normalised_tensor)
+    steps = [
+        transforms.RandomResizedCrop(IMG_SIZE, scale=(0.35, 1.0)),
+        transforms.RandomHorizontalFlip(),
+    ]
+    if strong:
+        steps.append(transforms.RandAugment(num_ops=2, magnitude=9))
+    steps += to_normalised_tensor
+    if strong:
+        steps.append(transforms.RandomErasing(p=0.25))
+    return transforms.Compose(steps)
 
 
 def _random_subset(dataset: Dataset, size: int | None, seed: int) -> Dataset:
@@ -140,6 +150,7 @@ def get_dataloaders(
     download: bool = True,
     fake: bool = False,
     seed: int = 0,
+    strong_aug: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     """Build the train and validation DataLoaders (they hand the model images in batches).
 
@@ -147,14 +158,15 @@ def get_dataloaders(
         train_subset / val_subset: use only this many images (for quick test runs).
         fake: use random noise images of the right shape instead of the real data.
               Only for testing the code without downloading anything.
+        strong_aug: use the stronger training augmentation (see get_transforms).
     """
     if fake:
-        train_set = datasets.FakeData(512, (3, IMG_SIZE, IMG_SIZE), NUM_CLASSES, get_transforms(train=True))
+        train_set = datasets.FakeData(512, (3, IMG_SIZE, IMG_SIZE), NUM_CLASSES, get_transforms(train=True, strong=strong_aug))
         val_set = datasets.FakeData(256, (3, IMG_SIZE, IMG_SIZE), NUM_CLASSES, get_transforms(train=False),
                                     random_offset=10_000)
     else:
         path = download_tiny_imagenet(root) if download else Path(root) / "tiny-imagenet-200"
-        train_set = TinyImageNet(path, "train", get_transforms(train=True))
+        train_set = TinyImageNet(path, "train", get_transforms(train=True, strong=strong_aug))
         val_set = TinyImageNet(path, "val", get_transforms(train=False))
 
     train_set = _random_subset(train_set, train_subset, seed)

@@ -10,7 +10,7 @@ Large Vision Transformers (DINOv2, CLIP, DeiT-III) show bright spots in their at
 
 ### Background and related work
 
-**What came before.** A Vision Transformer (ViT, Dosovitskiy et al., 2021) cuts an image into patches, turns each patch into a token, and adds a [CLS] token that collects a summary of the whole image. Adding extra tokens to a transformer was already common: BERT uses [CLS] and [SEP] tokens, and DETR uses "object queries". In all of these, the extra tokens either carry information in or are read out as a result. The closest idea is the **Memory Transformer** (Burtsev et al., 2020), which added blank "memory" tokens to a language model and improved translation. Sandler et al. (2022) tried learnable memory tokens for fine-tuning ViTs, but found they did not transfer well between tasks.
+**What came before.** A Vision Transformer (ViT, Dosovitskiy et al., 2021) cuts an image into patches, turns each patch into a token, and adds a [CLS] token that collects a summary of the whole image. Adding extra tokens to a transformer was already common, but usually to carry information in or to read a result out, like [CLS]. The closest idea to registers is the **Memory Transformer** (Burtsev et al., 2020), which added blank "memory" tokens to a language model and improved translation. Sandler et al. (2022) tried learnable memory tokens for fine-tuning ViTs, but found they did not transfer well between tasks.
 
 For vision, the key background is self-supervised learning. **DINO** (Caron et al., 2021) showed that a ViT trained without labels produces clean attention maps that outline objects. **LOST** (Siméoni et al., 2021) used those maps to find objects without any labels. **DINOv2** (Oquab et al., 2023) gave much better features overall, but LOST worked poorly on it. That puzzle is the starting point of this paper. **MAE** (He et al., 2022), trained only to rebuild hidden patches, shows no artifacts.
 
@@ -127,6 +127,7 @@ Every script has a quick code-test mode that uses random data instead of downloa
 | Register init | Normal, std 1e-6 (same as [CLS]) | Same as the official DINOv2 implementation |
 | Output | Registers discarded; [CLS] → linear head | As in the paper (Fig 6) |
 | Training | AdamW (lr 1e-3, wd 0.05), 5 warmup epochs + cosine decay, label smoothing 0.1, stochastic depth 0.1, random-resized-crop + flip, mixed precision | Standard DeiT-style recipe for training ViTs from scratch on small data |
+| Strong augmentation (option) | + RandAugment (2 edits, magnitude 9), random erasing (25%), MixUp (0.8) or CutMix (1.0) per batch | Our basic runs overfit (91% train vs 39% val accuracy); these are the DeiT recipe's tools against overfitting |
 
 ### Forward pass check (Week 3 milestone)
 
@@ -173,7 +174,7 @@ Data: Tiny-ImageNet. Model: ViT-Tiny (192-dim, 12 blocks, 3 heads, 8x8 patches, 
 
 ### Full training runs: 0 vs 4 registers
 
-ViT-Tiny trained on all 100,000 Tiny-ImageNet training images for 50 epochs, once without and once with 4 registers, same settings and seed otherwise. Run with `notebooks/full_training_colab.ipynb`.
+ViT-Tiny trained on all 100,000 Tiny-ImageNet training images for 50 epochs, without and with 4 registers, same settings and seed otherwise. The basic runs overfit strongly, so we also train both versions with **strong augmentation**, and one strong-augmentation run on half of the training images to see how much the amount of data matters. Run with `notebooks/full_training_colab.ipynb`.
 
 <!-- FULL_TRAINING_START -->
 Validation accuracy after the last epoch (we do not pick the best epoch, because the validation set is also our test set).
