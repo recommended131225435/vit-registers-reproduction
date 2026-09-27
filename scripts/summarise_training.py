@@ -122,12 +122,15 @@ def main() -> None:
         "model, shorter training); only the with/without-registers differences are. Each setting was "
         "trained once (seed 0), so differences of a few tenths of a point may be random variation."
     )
-    notes.append(
+    overfitting_note = (
         "How to read the overfitting columns: a large gap between train and validation accuracy, and a final "
-        "validation loss well above its lowest value, both mean the model is memorising the training images. "
-        "With strong augmentation, train accuracy is measured on mixed (MixUp/CutMix) images, so it is only "
-        "roughly comparable with the basic runs; the validation loss columns are directly comparable."
+        "validation loss well above its lowest value, both mean the model is memorising the training images."
     )
+    if any(r["aug"] == "strong" for r in runs):
+        overfitting_note += (" With strong augmentation, train accuracy is measured on mixed (MixUp/CutMix) "
+                             "images, so it is only roughly comparable with the basic runs; the validation loss "
+                             "columns are directly comparable.")
+    notes.append(overfitting_note)
 
     summary = "\n\n".join([
         "Validation accuracy after the last epoch (we do not pick the best epoch, because the validation "

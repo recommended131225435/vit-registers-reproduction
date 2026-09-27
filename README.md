@@ -211,12 +211,14 @@ ViT-Tiny trained on all 100,000 Tiny-ImageNet training images for 50 epochs, wit
 <!-- FULL_TRAINING_START -->
 Validation accuracy after the last epoch (we do not pick the best epoch, because the validation set is also our test set).
 
-| Model | Registers | Parameters | Epochs | Val accuracy | Val loss | Training time (min) |
-|---|---|---|---|---|---|---|
-| ViT-Tiny | 0 | 5,427,080 | 50 | **38.99%** | 3.537 | 75 |
-| ViT-Tiny | 4 | 5,427,848 | 50 | **37.86%** | 3.592 | 75 |
+| Model | Augmentation | Registers | Train images | Epochs | Val accuracy | Train accuracy | Val loss (final / lowest) | Time (min) |
+|---|---|---|---|---|---|---|---|---|
+| ViT-Tiny | basic | 0 | 100,000 | 50 | **38.99%** | 91.6% | 3.537 / 3.225 | 75 |
+| ViT-Tiny | basic | 4 | 100,000 | 50 | **37.86%** | 91.5% | 3.592 / 3.246 | 75 |
 
-Effect of adding registers: **-1.13 percentage points**. Paper (Table 2a, ImageNet top-1): DeiT-III 84.7 → 84.7, OpenCLIP 78.2 → 78.1, DINOv2 84.3 → 84.8, i.e. registers do not hurt accuracy. Our absolute accuracies are not comparable with the paper's (different dataset, much smaller model, shorter training); only the with/without-registers difference is. Each setting was trained once (seed 0), so differences of a few tenths of a point may be random variation.
+- Effect of adding registers (basic augmentation): **-1.13 points**.
+- Paper (Table 2a, ImageNet top-1): DeiT-III 84.7 → 84.7, OpenCLIP 78.2 → 78.1, DINOv2 84.3 → 84.8, i.e. registers do not hurt accuracy. Our absolute accuracies are not comparable with the paper's (different dataset, much smaller model, shorter training); only the with/without-registers differences are. Each setting was trained once (seed 0), so differences of a few tenths of a point may be random variation.
+- How to read the overfitting columns: a large gap between train and validation accuracy, and a final validation loss well above its lowest value, both mean the model is memorising the training images.
 
 ![Full training runs](results/figures/full_training_runs.png)
 <!-- FULL_TRAINING_END -->
@@ -228,7 +230,7 @@ Effect of adding registers: **-1.13 percentage points**. Paper (Table 2a, ImageN
 - **Compared with the paper:** at large scale the paper finds registers change ImageNet accuracy by −0.1 to +0.5 points (Table 2a). Our drop is larger, so this claim is only **partly** reproduced: there is no big accuracy cost, but we cannot rule out a small one.
 - **Why we can't say more yet:** each setting was trained once (seed 0), and the register run was paused and resumed once after epoch 14, which changes the order of the training images afterwards. A 1-point gap can come from this kind of randomness alone; training a second seed of each setting would tell us.
 - **A possible explanation (to be tested):** the paper reports that artifacts only appear in large models trained for a long time. A ViT-Tiny on 64x64 images may have no artifacts at all, in which case registers have no job to do and only add four extra tokens to the attention. In Week 4 we will measure our trained models the same way as Part A to check whether they contain high-norm tokens.
-- **Both models overfit:** training accuracy (91.5%) is far above validation accuracy (38–39%). This is typical for small ViTs trained from scratch on 100k images; stronger augmentation (MixUp, CutMix, RandAugment) would likely reduce it. We have added these as an option and will use them for the Week 4 runs. Since both runs here use identical settings, the comparison between them stays fair.
+- **Both models overfit:** training accuracy (91.5%) is far above validation accuracy (38–39%), and validation loss is lowest around epoch 18 (3.23) before rising to 3.54 by epoch 50. This is typical for small ViTs trained from scratch on 100k images; stronger augmentation (MixUp, CutMix, RandAugment) would likely reduce it. We have added these as an option and will use them for the Week 4 runs. Since both runs here use identical settings, the comparison between them stays fair.
 
 ## 6. Part A: reproducing the paper's findings on pretrained DINOv2
 
