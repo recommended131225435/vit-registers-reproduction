@@ -1,6 +1,7 @@
 # Reproducing "Vision Transformers Need Registers"
 
 Course project (Machine Learning, IBA Karachi): paper reproduction, experiment and deployment.
+Team Members: Hamza Uzair (30544), Shaheer Ahmed (31543)
 
 **Paper:** T. Darcet, M. Oquab, J. Mairal, P. Bojanowski. *Vision Transformers Need Registers.* ICLR 2024 (oral). [arXiv:2309.16588](https://arxiv.org/abs/2309.16588)
 
