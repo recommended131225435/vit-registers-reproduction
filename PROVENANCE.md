@@ -17,6 +17,7 @@ Tags:
 | `src/plots.py`, `src/report.py`, `src/utils.py` | Written | |
 | `scripts/check_forward_pass.py`, `scripts/run_part_a.py`, `scripts/summarise_training.py` | Written | |
 | `tests/`, `notebooks/milestone2_colab.ipynb`, `notebooks/full_training_colab.ipynb` | Written | |
+| `.github/workflows/tests.yml` | Written | Standard GitHub Actions setup (`actions/checkout`, `actions/setup-python`) running our tests. |
 | DINOv2 model code and pretrained weights | Reused | Loaded unchanged with `torch.hub.load("facebookresearch/dinov2", ...)`. Apache-2.0 licence. |
 | Tiny-ImageNet dataset | Reused | http://cs231n.stanford.edu/tiny-imagenet-200.zip |
 | Imagenette dataset | Reused | Through `torchvision.datasets.Imagenette` (fast.ai). |

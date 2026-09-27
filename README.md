@@ -4,6 +4,24 @@ Course project (Machine Learning, IBA Karachi): paper reproduction, experiment a
 
 **Paper:** T. Darcet, M. Oquab, J. Mairal, P. Bojanowski. *Vision Transformers Need Registers.* ICLR 2024 (oral). [arXiv:2309.16588](https://arxiv.org/abs/2309.16588)
 
+[![Tests](https://github.com/recommended131225435/vit-registers-reproduction/actions/workflows/tests.yml/badge.svg)](https://github.com/recommended131225435/vit-registers-reproduction/actions/workflows/tests.yml)
+[![Open milestone notebook in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/recommended131225435/vit-registers-reproduction/blob/main/notebooks/milestone2_colab.ipynb)
+
+## Results at a glance
+
+| Paper claim | Paper | Ours | Reproduced? |
+|---|---|---|---|
+| Large ViTs contain a few patch tokens with a very high norm | Fig 3: 2.37% of ViT-g tokens | 2.62% of ViT-g tokens | **Yes** |
+| These tokens sit on redundant (background) patches | Fig 5a | Neighbour similarity 0.871 vs 0.662 | **Yes** |
+| Registers remove them | Fig 7 | 2.62% → 0.00% | **Yes** |
+| Registers give clean attention maps | Fig 1 | Same visual result (section 6) | **Yes** |
+| The high norms move into the registers | Fig 15 | One register at 1389.6 vs 107.8 for a typical patch | **Yes** |
+| High-norm tokens only appear in large models | Fig 4c: from ViT-L up | Only in ViT-g (released S/B/L are distilled) | **Partly** |
+| Registers do not hurt accuracy | Table 2a: −0.1 to +0.5 points | −1.13 points on our ViT-Tiny, single run | **Partly** |
+| Registers improve dense tasks and object discovery | Tables 2a, 3 | Not tested yet | Week 4 |
+
+**Week 3 milestone:** data pipeline, our own ViT with registers, and forward pass all done (24/24 checks, section 5). Beyond the milestone: the reproduction on Meta's models above (Part A), and two full 50-epoch training runs.
+
 ## 1. The paper in short
 
 Large Vision Transformers (DINOv2, CLIP, DeiT-III) show bright spots in their attention maps on empty background areas. The authors show these spots are patch tokens with a very large norm (about 10x normal). These tokens have lost the information about their own patch and instead hold information about the whole image. Their explanation: the model needs extra space for global computation, and without any, it takes over patches it considers useless. The fix is to add a few extra learnable tokens ("registers") to the input that the model can use as scratch space. These tokens are thrown away at the output. With registers, the artifacts disappear and dense tasks improve.
@@ -12,7 +30,7 @@ Large Vision Transformers (DINOv2, CLIP, DeiT-III) show bright spots in their at
 
 **What came before.** A Vision Transformer (ViT, Dosovitskiy et al., 2021) cuts an image into patches, turns each patch into a token, and adds a [CLS] token that collects a summary of the whole image. Adding extra tokens to a transformer was already common, but usually to carry information in or to read a result out, like [CLS]. The closest idea to registers is the **Memory Transformer** (Burtsev et al., 2020), which added blank "memory" tokens to a language model and improved translation. Sandler et al. (2022) tried learnable memory tokens for fine-tuning ViTs, but found they did not transfer well between tasks.
 
-For vision, the key background is self-supervised learning. **DINO** (Caron et al., 2021) showed that a ViT trained without labels produces clean attention maps that outline objects. **LOST** (Siméoni et al., 2021) used those maps to find objects without any labels. **DINOv2** (Oquab et al., 2023) gave much better features overall, but LOST worked poorly on it. That puzzle is the starting point of this paper. **MAE** (He et al., 2022), trained only to rebuild hidden patches, shows no artifacts.
+For vision, the key background is self-supervised learning. **DINO** (Caron et al., 2021) showed that a ViT trained without labels produces clean attention maps that outline objects. **LOST** (Siméoni et al., 2021) used those maps to find objects without any labels. **DINOv2** (Oquab et al., 2024) gave much better features overall, but LOST worked poorly on it. That puzzle is the starting point of this paper. **MAE** (He et al., 2022), trained only to rebuild hidden patches, shows no artifacts.
 
 **What was missing.** Nobody had explained why DINOv2, CLIP and supervised ViTs (DeiT-III) have noisy attention maps while DINO does not, or offered a fix. Earlier work treated extra tokens as an add-on to gain accuracy, not as a remedy for a problem inside the model.
 
@@ -33,9 +51,19 @@ For vision, the key background is self-supervised learning. **DINO** (Caron et a
 | Part | What | Status |
 |---|---|---|
 | **A** | Reproduce the paper's diagnostic findings (Fig 1, 3, 4c, 5a, 7, 15) on the **official pretrained DINOv2 models**, with and without registers. No training needed. | Done: `scripts/run_part_a.py`, results in section 6 |
-| **B** | **Our own ViT implementation with a register option**, a Tiny-ImageNet data pipeline, and a training script. Train small ViTs with 0 vs 4 registers. | Pipeline, model and forward pass done. Full training runs: see section 5. |
+| **B** | **Our own ViT implementation with a register option**, a Tiny-ImageNet data pipeline, and a training script. Train small ViTs with 0 vs 4 registers. | Pipeline, model and forward pass done (24/24 checks). Two full 50-epoch runs done (0 vs 4 registers). Section 5. |
 | Experiment | *At what model size do high-norm artifacts appear, and do registers change anything below that size?* | Week 4 |
 | Deployment | FastAPI app: upload an image, see attention maps without vs with registers | Week 5 |
+
+### Metrics we use, and what they miss
+
+| Metric | What it measures | What it does not tell us |
+|---|---|---|
+| **Token norm** (L2 length of a token vector) | How "loud" a token is; the paper's artifacts are about 10x louder than normal tokens | Why the model makes them; it depends on where it is measured (before or after the final LayerNorm, see section 6) |
+| **% outlier tokens** | How common the artifacts are | Depends on the cutoff: the paper hand-picked 150 for ViT-g; we use 3x the model's median norm so every model is judged the same way |
+| **Neighbour cosine similarity** (right after patch embedding) | Whether a patch looks like its 4 neighbours, i.e. is redundant background | Nothing about what the token contains later in the network |
+| **[CLS] attention maps** | Where the model looks; artifacts show up as bright background spots | It is a picture, not a number, so it supports the other metrics rather than replacing them |
+| **Top-1 validation accuracy** (Tiny-ImageNet, 200 classes) | How well our ViT classifies images it never trained on | Nothing about feature-map quality, which is where the paper says registers help most (segmentation, depth, object discovery) |
 
 ## 3. Repository structure
 
@@ -58,7 +86,8 @@ scripts/
 
 tests/                      Unit tests for the model and the measurements
 notebooks/milestone2_colab.ipynb   Runs everything for milestone 2 on Google Colab
-notebooks/full_training_colab.ipynb Full 50-epoch training runs (0 vs 4 registers)
+notebooks/full_training_colab.ipynb Full 50-epoch training runs (0 vs 4 registers; Week 4 runs included)
+.github/workflows/tests.yml         Runs the unit tests and a forward-pass check on every push
 results/
 ├── figures/     all plots
 ├── logs/        forward pass check report
@@ -90,7 +119,10 @@ flowchart LR
 
 ## 4. How to run
 
-**Easiest: Google Colab.** Open `notebooks/milestone2_colab.ipynb` in Colab, choose a T4 GPU runtime, and run all cells (about 30–40 min).
+**Easiest: Google Colab.** Choose a T4 GPU runtime, then run all cells.
+
+- [Milestone notebook](https://colab.research.google.com/github/recommended131225435/vit-registers-reproduction/blob/main/notebooks/milestone2_colab.ipynb): tests, forward-pass check, sanity runs and Part A (about 30–40 min).
+- [Full training notebook](https://colab.research.google.com/github/recommended131225435/vit-registers-reproduction/blob/main/notebooks/full_training_colab.ipynb): the 50-epoch runs (about 75 min each; progress is saved to Google Drive, so it can be resumed).
 
 **By hand** (always from the repo root):
 
@@ -127,7 +159,7 @@ Every script has a quick code-test mode that uses random data instead of downloa
 | Register init | Normal, std 1e-6 (same as [CLS]) | Same as the official DINOv2 implementation |
 | Output | Registers discarded; [CLS] → linear head | As in the paper (Fig 6) |
 | Training | AdamW (lr 1e-3, wd 0.05), 5 warmup epochs + cosine decay, label smoothing 0.1, stochastic depth 0.1, random-resized-crop + flip, mixed precision | Standard DeiT-style recipe for training ViTs from scratch on small data |
-| Strong augmentation (option) | + RandAugment (2 edits, magnitude 9), random erasing (25%), MixUp (0.8) or CutMix (1.0) per batch | Our basic runs overfit (91% train vs 39% val accuracy); these are the DeiT recipe's tools against overfitting |
+| Strong augmentation (option, for Week 4) | + RandAugment (2 edits, magnitude 9), random erasing (25%), MixUp (0.8) or CutMix (1.0) per batch | Our basic runs overfit (91% train vs 39% val accuracy); these are the DeiT recipe's tools against overfitting. Off by default, so the runs below are unaffected. |
 
 ### Forward pass check (Week 3 milestone)
 
@@ -174,7 +206,7 @@ Data: Tiny-ImageNet. Model: ViT-Tiny (192-dim, 12 blocks, 3 heads, 8x8 patches, 
 
 ### Full training runs: 0 vs 4 registers
 
-ViT-Tiny trained on all 100,000 Tiny-ImageNet training images for 50 epochs, without and with 4 registers, same settings and seed otherwise. The basic runs overfit strongly, so we also train both versions with **strong augmentation**, and one strong-augmentation run on half of the training images to see how much the amount of data matters. Run with `notebooks/full_training_colab.ipynb`.
+ViT-Tiny trained on all 100,000 Tiny-ImageNet training images for 50 epochs, without and with 4 registers, same settings and seed otherwise (basic augmentation: random crop and flip). Run with `notebooks/full_training_colab.ipynb`.
 
 <!-- FULL_TRAINING_START -->
 Validation accuracy after the last epoch (we do not pick the best epoch, because the validation set is also our test set).
@@ -196,7 +228,7 @@ Effect of adding registers: **-1.13 percentage points**. Paper (Table 2a, ImageN
 - **Compared with the paper:** at large scale the paper finds registers change ImageNet accuracy by −0.1 to +0.5 points (Table 2a). Our drop is larger, so this claim is only **partly** reproduced: there is no big accuracy cost, but we cannot rule out a small one.
 - **Why we can't say more yet:** each setting was trained once (seed 0), and the register run was paused and resumed once after epoch 14, which changes the order of the training images afterwards. A 1-point gap can come from this kind of randomness alone; training a second seed of each setting would tell us.
 - **A possible explanation (to be tested):** the paper reports that artifacts only appear in large models trained for a long time. A ViT-Tiny on 64x64 images may have no artifacts at all, in which case registers have no job to do and only add four extra tokens to the attention. In Week 4 we will measure our trained models the same way as Part A to check whether they contain high-norm tokens.
-- **Both models overfit:** training accuracy (91.5%) is far above validation accuracy (38–39%). This is typical for small ViTs trained from scratch on 100k images; stronger augmentation (Mixup, CutMix, RandAugment) would likely reduce it. Since both runs use identical settings, the comparison between them stays fair.
+- **Both models overfit:** training accuracy (91.5%) is far above validation accuracy (38–39%). This is typical for small ViTs trained from scratch on 100k images; stronger augmentation (MixUp, CutMix, RandAugment) would likely reduce it. We have added these as an option and will use them for the Week 4 runs. Since both runs here use identical settings, the comparison between them stays fair.
 
 ## 6. Part A: reproducing the paper's findings on pretrained DINOv2
 
@@ -278,14 +310,23 @@ Figures: `results/figures/part_a_*.png`
 - **Model sizes in Part A:** The paper's Fig 4c compares DINOv2 models trained separately at each size. Meta's *released* ViT-S/B/L were distilled from ViT-g, so the size trend in our Part A is measured on distilled models. This may differ from the paper's trend.
 - **Images:** 256 Imagenette validation images at 224x224 (16x16 patches), not the paper's image set or resolution.
 - **Outlier cutoff:** a fixed relative rule (3 × the model's median norm) instead of a hand-picked value per model. For ViT-g we also report the paper's cutoff of 150.
-- **Part B scale:** ViTs with 5–86M parameters trained from scratch on 64x64 images for tens of epochs. The paper trains ViT-B/L on ImageNet-22k or larger datasets for much longer. The paper reports that artifacts only appear in large, long-trained models (Fig 4), so our small models may show no artifacts at all. This is what our Week 4 experiment tests.
+- **Part B scale:** so far a ViT-Tiny (5.4M parameters) trained from scratch on 100,000 images of 64x64 for 50 epochs; ViT-Small (22M) and ViT-Base (86M) are planned for Week 4. The paper trains ViT-B/L/g on ImageNet-22k or larger datasets for much longer. The paper reports that artifacts only appear in large, long-trained models (Fig 4), so our small models may show no artifacts at all. This is what our Week 4 experiment tests.
 
-## 8. Next steps
+## 8. Limitations
 
-- **Week 4:** measure our trained ViTs the same way as Part A (token norms, attention maps). Then the scaling experiment: Tiny / Small / Base, with vs without registers.
+- **Compute:** one free Colab T4 GPU. We cannot train models of the paper's size, so Part A uses Meta's released models and Part B uses a much smaller ViT.
+- **Released models:** Meta's ViT-S/B/L were distilled from ViT-g, so Part A's model-size trend is not a clean test of the paper's Fig 4c.
+- **Sample size in Part A:** 256 Imagenette validation images at 224x224. Enough to see the effects clearly, but the percentages would shift a little with a different image set.
+- **Single training run per setting:** differences of about a point between our two Part B runs may be random. The register run was also paused and resumed once, which changes the order of the training images after epoch 14.
+- **Overfitting:** our ViT-Tiny reaches 91.5% training but 39% validation accuracy. This lowers our absolute accuracy but affects both runs equally.
+- **Not tested yet:** whether our own trained ViTs contain high-norm tokens, the paper's claim that high-norm tokens hold global information (Table 1), and the benefits on dense tasks and object discovery (Tables 2a, 3). These are planned for Week 4.
+
+## 9. Next steps
+
+- **Week 4:** measure our trained ViTs the same way as Part A (token norms, attention maps); rerun with strong augmentation against overfitting; the scaling experiment (Tiny / Small / Base, with vs without registers); and object discovery with LOST on Meta's models.
 - **Week 5:** FastAPI deployment, final report and presentation.
 
-## 9. Provenance
+## 10. Provenance
 
 See [PROVENANCE.md](PROVENANCE.md) for a file-by-file record of what was written for this project, what was adapted, and what was reused.
 
