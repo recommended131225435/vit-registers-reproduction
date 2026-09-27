@@ -256,12 +256,16 @@ def main(argv=None) -> dict:
         "device": str(device), "params": count_params(model), "torch": torch.__version__,
         "steps_per_epoch": steps_per_epoch, "total_steps": total_steps, "warmup_steps": warmup_steps,
     }
-    (out_dir / "config.json").write_text(json.dumps(config, indent=2))
-    log_path, ckpt_path = out_dir / "log.csv", out_dir / "checkpoint.pt"
+    config_path, log_path, ckpt_path = out_dir / "config.json", out_dir / "log.csv", out_dir / "checkpoint.pt"
+    resuming = args.resume and ckpt_path.exists() and log_path.exists()
+    if not (resuming and config_path.exists()):
+        # When resuming, keep the original settings file: it records how the run was actually
+        # trained (for example on which device), not the session that picked it up again.
+        config_path.write_text(json.dumps(config, indent=2))
 
     start_epoch, step = 1, 0
     val_loss = val_acc = float("nan")
-    if args.resume and ckpt_path.exists() and log_path.exists():
+    if resuming:
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
