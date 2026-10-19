@@ -168,3 +168,82 @@ def collect_dinov2_stats(model: nn.Module, loader: DataLoader, device: torch.dev
     stats["attn_maps"] = stats["attn_maps"][:num_maps]
     stats["grid_size"] = grid_size
     return stats
+
+
+# ----------------------------------------------------------------------------
+# Our own trained ViTs (Milestone 3 experiment)
+# ----------------------------------------------------------------------------
+def summarise_norms(norms: np.ndarray, multiplier: float = 3.0) -> dict:
+    """Median, largest-over-median and % outliers for a set of token norms (any shape)."""
+    flat = np.asarray(norms, dtype=np.float64).ravel()
+    median = float(np.median(flat))
+    return {
+        "median": median,
+        "max": float(flat.max()),
+        "max_over_median": float(flat.max() / median),
+        "p99_over_median": float(np.percentile(flat, 99) / median),
+        "pct_outliers": 100 * float((flat > multiplier * median).mean()),
+    }
+
+
+@torch.no_grad()
+def collect_own_vit_stats(model: nn.Module, loader: DataLoader, device: torch.device,
+                          num_maps: int, multiplier: float = 3.0) -> dict:
+    """Run one of OUR trained ViTs (src/vit.py) over a set of images and record what we analyse.
+
+    The blocks are run one by one so we can measure patch-token norms after EVERY block
+    (paper Fig 4a), not only at the end. All norms are taken before the final LayerNorm,
+    as in Part A.
+
+    Returns:
+        layer_summary   list (one per block) of summarise_norms(...) dicts
+        patch_norm      (images, patches)  patch-token norms after the last block
+        cls_norm        (images,)          [CLS] norm after the last block
+        reg_norm        (images, R)        register norms after the last block (R may be 0)
+        attn_patch_to_reg  (images,)       share of each patch's attention (last block) that goes
+                                           to the registers, averaged over heads and patches
+        attn_cls_to_reg    (images,)       the same for the [CLS] token
+        cosine          (images, patches)  neighbour similarity right after patch embedding
+        attn_maps       (num_maps, grid, grid)  [CLS] attention to the patches (last block)
+        grid_size, num_tokens              ints
+    """
+    model.eval()
+    R = model.num_registers
+    last = len(model.blocks) - 1
+    per_layer = [[] for _ in model.blocks]
+    parts = {k: [] for k in ["patch_norm", "cls_norm", "reg_norm", "attn_patch_to_reg",
+                             "attn_cls_to_reg", "cosine", "attn_maps"]}
+    maps_collected = 0
+
+    for images, _ in loader:
+        images = images.to(device)
+        parts["cosine"].append(neighbour_cosine(model.patch_embed(images), model.grid_size).cpu())
+
+        x = model.prepare_tokens(images)
+        attn = None
+        for i, block in enumerate(model.blocks):
+            x, a = block(x, return_attn=(i == last))
+            if a is not None:
+                attn = a                                         # (batch, heads, T, T)
+            per_layer[i].append(x[:, 1 + R:].norm(dim=-1).cpu())
+
+        parts["patch_norm"].append(x[:, 1 + R:].norm(dim=-1).cpu())
+        parts["cls_norm"].append(x[:, 0].norm(dim=-1).cpu())
+        parts["reg_norm"].append(x[:, 1:1 + R].norm(dim=-1).cpu())
+
+        attn = attn.mean(dim=1)                                  # average over heads: (batch, T, T)
+        to_reg = attn[:, :, 1:1 + R].sum(dim=-1)                 # share of attention given to registers
+        parts["attn_patch_to_reg"].append(to_reg[:, 1 + R:].mean(dim=1).cpu())
+        parts["attn_cls_to_reg"].append(to_reg[:, 0].cpu())
+
+        if maps_collected < num_maps:
+            maps = attn[:, 0, 1 + R:].reshape(-1, model.grid_size, model.grid_size)
+            parts["attn_maps"].append(maps.cpu())
+            maps_collected += maps.shape[0]
+
+    stats = {key: torch.cat(values).numpy() for key, values in parts.items()}
+    stats["attn_maps"] = stats["attn_maps"][:num_maps]
+    stats["layer_summary"] = [summarise_norms(torch.cat(v).numpy(), multiplier) for v in per_layer]
+    stats["grid_size"] = model.grid_size
+    stats["num_tokens"] = 1 + R + model.num_patches
+    return stats
