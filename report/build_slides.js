@@ -185,7 +185,7 @@ pres.addSection({ title: "Reproduction" });
 s = content("What we built", "Reproduction");
 card(s, 0.6, 1.5, 5.9, 2.35, "Part A: the paper's own models", "Meta's released DINOv2 S/B/L/g, each with and without registers. We measure token norms, outliers and attention maps exactly as the paper does.", C.accent1);
 card(s, 6.83, 1.5, 5.9, 2.35, "Part B: our own ViT with registers", "Written from scratch in PyTorch, trained on Tiny-ImageNet (100k images, 200 classes). 24 forward-pass checks, 15 unit tests, automatic CI.", C.accent3);
-card(s, 0.6, 4.1, 5.9, 2.35, "Experiment: model size", "Train ViTs of growing size with 0 and 4 registers and measure whether artifacts appear.", C.accent2);
+card(s, 0.6, 4.1, 5.9, 2.35, "Experiment: model size", "Train ViTs of growing size with 0 and 4 registers and measure whether artifacts appear. Branch: experiment-model-size.", C.accent2);
 card(s, 6.83, 4.1, 5.9, 2.35, "Deployment: FastAPI app", "Upload an image: our ViT-Tiny predicts the class, DINOv2 shows its maps without vs with registers.", C.accent6);
 s.addNotes("We worked in four parts. Part A uses Meta's released models to check the paper's claims directly. Part B is our own implementation, trained on Tiny-ImageNet because ImageNet is too big for a free GPU. Then our experiment on model size, and finally the deployed app.");
 

@@ -8,6 +8,10 @@ Team Members: Hamza Uzair (30544), Shaheer Ahmed (31543)
 [![Tests](https://github.com/recommended131225435/vit-registers-reproduction/actions/workflows/tests.yml/badge.svg)](https://github.com/recommended131225435/vit-registers-reproduction/actions/workflows/tests.yml)
 [![Open milestone notebook in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/recommended131225435/vit-registers-reproduction/blob/main/notebooks/milestone2_colab.ipynb)
 
+> **Branches.** `main` (this page): reproduction, deployment, final report and presentation.
+> **[`experiment-model-size`](https://github.com/recommended131225435/vit-registers-reproduction/tree/experiment-model-size): the Milestone 3 experiment** (section 7) on its own, on top of the reproduction milestone: the measurement code, the Colab notebook, the tests, all 12 training runs and their results.
+> `main` also contains the experiment's code and results, because the final report and the app use them.
+
 ## Results at a glance
 
 | Paper claim | Paper | Ours | Reproduced? |

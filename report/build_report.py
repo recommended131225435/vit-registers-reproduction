@@ -157,6 +157,8 @@ def build():
               p("Final technical report — Machine Learning paper reproduction and deployment", "subtitle"),
               p(" · ".join(f"{n} ({e})" for n, e in TEAM), "subtitle"),
               p(f"Code, results and notebooks: <font color='#2f6db5'>{REPO_URL}</font>", "subtitle"),
+              p("Branch <font face='Courier'>main</font>: reproduction and deployment · branch "
+                "<font face='Courier'>experiment-model-size</font>: the additional experiment", "subtitle"),
               Spacer(1, 0.6 * cm)]
     story.append(p(
         "<b>Abstract.</b> Darcet et al. (ICLR 2024) found that large Vision Transformers quietly turn a few "
@@ -351,7 +353,12 @@ def build():
                 "registers (compared with the share they would get if attention were uniform), and [CLS] "
                 "attention maps. Meta’s DINOv2 models from Part A provide the large end of the same size axis. "
                 "<b>Hypothesis</b> from the paper: no outliers in our small models, little use of the registers, "
-                "and outliers only at the top of the DINOv2 range.")]
+                "and outliers only at the top of the DINOv2 range."),
+              p("<b>Where to find it.</b> The experiment’s code (<font face='Courier'>scripts/analyse_run.py</font>, "
+                "<font face='Courier'>scripts/summarise_experiment.py</font>, the measurement functions in "
+                "<font face='Courier'>src/analysis.py</font>), the Colab notebook "
+                "(<font face='Courier'>notebooks/experiment_colab.ipynb</font>), its tests and all 12 runs are in the "
+                "repository branch <font face='Courier'>experiment-model-size</font>.")]
     if experiment:
         def exp_rows(runs):
             rows = []
