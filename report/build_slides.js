@@ -42,10 +42,23 @@ const log0 = readCsv(path.join(RES, "runs", "tiny_reg0", "log.csv"));
 const log4 = readCsv(path.join(RES, "runs", "tiny_reg4", "log.csv"));
 const expDir = path.join(RES, "experiment");
 const ORDER = ["tiny", "small", "base"];
-const experiment = fs.existsSync(expDir)
+// Same rule as scripts/summarise_experiment.py: one run per (size, registers), the one at MAIN_LR for its size.
+const MAIN_LR = { tiny: 2.5e-4, small: 2.5e-4, base: 2.5e-4 };
+const allRuns = fs.existsSync(expDir)
   ? fs.readdirSync(expDir).map((d) => readJson(path.join(expDir, d, "stats.json"))).filter((s) => s && !s.fake)
-      .sort((a, b) => ORDER.indexOf(a.size) - ORDER.indexOf(b.size) || a.registers - b.registers)
+      .map((s) => ({ ...s, lr: (readJson(path.join(RES, "runs", s.run, "config.json"), {}) || {}).lr || 1e-3 }))
   : [];
+const experiment = [];
+const extraRuns = [];
+for (const size of ORDER) {
+  for (const regs of [0, 4]) {
+    const group = allRuns.filter((r) => r.size === size && r.registers === regs);
+    if (!group.length) continue;
+    const chosen = group.find((r) => Math.abs(r.lr - MAIN_LR[size]) < 1e-9) || group[0];
+    experiment.push(chosen);
+    extraRuns.push(...group.filter((r) => r !== chosen));
+  }
+}
 const text = readJson(path.join(__dirname, "text.json"), {});
 const screenshot = [path.join(FIG, "deployment_screenshot.png"), path.join(ASSETS, "deployment_screenshot.png")]
   .find((p) => fs.existsSync(p));
@@ -220,7 +233,7 @@ s.addChart(pres.charts.LINE, [
 });
 stat(s, pct(final0.val_acc), "without registers (Tiny-ImageNet, 50 epochs)", 9.1, 1.6, 3.7, HEX.noReg);
 stat(s, pct(final4.val_acc), "with 4 registers", 9.1, 3.25, 3.7, HEX.reg);
-s.addText(`Gap ${(100 * (final4.val_acc - final0.val_acc)).toFixed(2)} points; the paper reports −0.1 to +0.5 at ImageNet scale. One seed per setting, so partly reproduced.`,
+s.addText(`Gap ${(100 * (final4.val_acc - final0.val_acc)).toFixed(2).replace("-", "−")} points (lr 1e-3); −0.81 when retrained at lr 2.5e-4. The paper reports −0.1 to +0.5. One seed per setting.`,
   { isTextBox: true, x: 9.1, y: 4.95, w: 3.7, h: 1.6, fontSize: 14, color: C.text1, margin: 0, valign: "top" });
 s.addNotes("We trained our own ViT-Tiny for 50 epochs on Tiny-ImageNet. Both versions learn the same way and end around 38 to 39 percent, about one point apart. The paper reports almost no change. With one run each we cannot tell if one point is real or noise, so we call this partly reproduced. Absolute accuracy is low because the model is tiny and the images are 64 by 64.");
 
@@ -229,10 +242,10 @@ pres.addSection({ title: "Experiment" });
 s = content("Our experiment: do small ViTs get artifacts?", "Experiment");
 s.addText("Do high-norm artifacts appear in small ViTs trained from scratch, or only once models are large — and do registers do anything below that size?",
   { isTextBox: true, x: 0.6, y: 1.45, w: 12.1, h: 1.0, fontSize: 20, italic: true, color: C.accent6, margin: 0, valign: "top" });
-card(s, 0.6, 2.75, 3.9, 2.6, "Change", "Model size: ViT-Tiny (5.4M), ViT-Small (21.7M)" + (experiment.some((e) => e.size === "base") ? ", ViT-Base (85.8M)" : "") + ", each with 0 and 4 registers.", C.accent2);
-card(s, 4.72, 2.75, 3.9, 2.6, "Keep fixed", "Data (Tiny-ImageNet), recipe, 50 epochs, seed, patch size. Meta's DINOv2 S/B/L/g give the large end of the axis.", C.accent1);
+card(s, 0.6, 2.75, 3.9, 2.6, "Change", "Model size: ViT-Tiny (5.4M), ViT-Small (21.5M)" + (experiment.some((e) => e.size === "base") ? ", ViT-Base (85.4M)" : "") + ", each with 0 and 4 registers.", C.accent2);
+card(s, 4.72, 2.75, 3.9, 2.6, "Keep fixed", "Data (Tiny-ImageNet), recipe with lr 2.5e-4 for every size, 50 epochs, seed, patch size. Meta's DINOv2 S/B/L/g give the large end of the axis.", C.accent1);
 card(s, 8.84, 2.75, 3.9, 2.6, "Measure", "Token norms after every block, % outliers (> 3× median), how much attention the registers get, attention maps, accuracy.", C.accent3);
-s.addNotes("The paper says artifacts only appear in large, long-trained models, but it shows this for one training method on huge data. We can only train small models, so we asked: what happens at the small end? We change only model size, keep everything else fixed, and measure the artifacts in our own trained models, next to Meta's large models from Part A.");
+s.addNotes("The paper says artifacts only appear in large, long-trained models, but it shows this for one training method on huge data. We can only train small models, so we asked: what happens at the small end? We change only model size, keep everything else fixed, and measure the artifacts in our own trained models, next to Meta's large models from Part A. One lesson on the way: with the learning rate of our first runs, 1e-3, the Base models collapsed after the warm-up, so we retrained all six models at 2.5e-4, which is what the DeiT paper's rule gives for our batch size.");
 
 // ---------------- 9-10. experiment results ----------------
 s = content(text.slide_experiment_title || "Result: artifacts are a large-model effect", "Experiment");
@@ -251,6 +264,16 @@ if (experiment.length) {
 }
 s.addNotes(text.slide_registers_notes || "Register-usage results to be added.");
 
+// ---------------- learning-rate lesson ----------------
+s = content("A lesson on the way: the learning rate", "Experiment");
+picture(s, path.join(FIG, "experiment_learning_rate.png"), 0.5, 1.45, 12.3, 4.0, "learning rate figure");
+bullets(s, [
+  "At lr 1e-3 (dashed), ViT-Base collapses after the warm-up and ends at 8.6–10.3%; ViT-Small trains worse",
+  "At lr 2.5e-4 (solid; DeiT's rule for batch 256), every size trains normally: about 39–40%",
+  "We retrained all six models at 2.5e-4 before comparing, and kept the failed runs as a result",
+], { x: 0.6, y: 5.6, w: 12.1, h: 1.3, fontSize: 15 });
+s.addNotes("One thing that went wrong, and what we learned from it. Our first experiment runs used the learning rate of our earlier ViT-Tiny runs, 1e-3. ViT-Tiny was fine, ViT-Small trained worse, and ViT-Base completely collapsed once the learning rate reached its peak: it ended at around 9 to 10 percent accuracy. If we had measured those broken models, the size comparison would have been meaningless. So we retrained all six models at 2.5e-4, the value the DeiT rule gives for our batch size, and every size trained normally. The failed runs are still reported in our results.");
+
 // ---------------- 11. deployment ----------------
 pres.addSection({ title: "Deployment" });
 s = content("Deployment: try it on any photo", "Deployment");
@@ -258,11 +281,11 @@ picture(s, screenshot, 0.5, 1.4, 7.6, 5.4, "app screenshot");
 bullets(s, [
   "FastAPI app: web page, POST /predict, /health, /docs",
   "Our ViT-Tiny (0 and 4 registers) gives the top-5 classes",
-  "DINOv2 ViT-B without vs with registers: attention map, norm map and outlier count",
-  "Bad uploads are rejected (400 / 413); 5 automated tests",
-  "Start: uvicorn app.main:app --port 8000",
+  "DINOv2 without vs with registers: attention map, norm map and outlier count (size S/B/L/G)",
+  "Here, DINOv2-L: without registers it stares at one sky patch; with registers it looks at the grass",
+  "Bad uploads rejected (400 / 413); 5 automated tests",
 ], { x: 8.4, y: 1.6, w: 4.4, h: 5.1, fontSize: 15 });
-s.addNotes("Now the live demo. We upload a photo. On top, DINOv2 without registers shows bright spots in the background and several outlier patches; with registers the map is clean and there are none. Below, our own ViT-Tiny gives its top-5 classes. The same thing is available as a JSON API.");
+s.addNotes("Now the demo. We upload a photo of sky above grass. On the left, DINOv2-Large without registers puts its attention on one random square of empty sky: that is the paper's artifact. On the right, with registers, the attention moves to the grass, the only real content. The norm maps show no outliers at this size, which matches Part A: only the giant model has clear norm outliers. Below, our own ViT-Tiny gives its top-5 classes; sky is not one of its 200 classes, so it guesses scenery like barn and alp. The same thing is available as a JSON API, with documentation at /docs.");
 
 // ---------------- 12. conclusion ----------------
 pres.addSection({ title: "Conclusion" });

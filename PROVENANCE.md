@@ -25,6 +25,7 @@ Tags:
 | `app/weights/vit_tiny_reg0.pt`, `vit_tiny_reg4.pt` | Written | Our own trained ViT-Tiny weights (fp16), exported from our training runs with `scripts/export_model.py`. |
 | `report/build_report.py` | Written | Builds `report/report.pdf` with reportlab (library, reused); all numbers are read from `results/`. |
 | `report/build_slides.js` | Written | Builds `report/presentation.pptx` with pptxgenjs (library, reused). |
+| `report/text.json`, `report/report.pdf`, `report/presentation.pptx` | Written | Discussion text used by both builders, and the built report and slides. |
 | `report/apply_theme.js` | Adapted | Helper from an AI-assistant presentation toolkit that writes the deck's theme colours into the .pptx; used unchanged apart from paths. |
 | `report/assets/attention_vitg.png` | Written | Crop of our own Part A figure `results/figures/part_a_attention_maps.png` (DINOv2 ViT-g). |
 | `.github/workflows/tests.yml` | Written | Standard GitHub Actions setup (`actions/checkout`, `actions/setup-python`) running our tests. |

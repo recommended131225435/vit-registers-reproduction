@@ -21,6 +21,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table,
                                 TableStyle)
 
+from scripts.summarise_experiment import MAIN_LR, load_runs, split_runs
+
 ROOT = Path(__file__).resolve().parent.parent
 RES = ROOT / "results"
 FIG = RES / "figures"
@@ -94,6 +96,7 @@ def table(header, rows, widths=None):
         ("LINEBELOW", (0, -1), (-1, -1), 0.8, INK),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
     ]))
     return t
 
@@ -139,9 +142,10 @@ def footer(canvas, doc):
 def build():
     part_a = load(RES / "part_a" / "summary.json", {}).get("results", {})
     runs = {r: load(RES / "runs" / r / "final.json") for r in ["tiny_reg0", "tiny_reg4"]}
-    experiment = sorted(
-        [s for s in (load(f) for f in (RES / "experiment").glob("*/stats.json")) if s and not s.get("fake")],
-        key=lambda s: (["tiny", "small", "base"].index(s["size"]), s["registers"]))
+    try:
+        experiment, extra_runs = split_runs(load_runs())  # one run per (size, registers) + the others
+    except SystemExit:
+        experiment, extra_runs = [], []
     text = load(TEXT, {})
     g = part_a.get("g", {})
     acc0, acc4 = 100 * runs["tiny_reg0"]["val_acc"], 100 * runs["tiny_reg4"]["val_acc"]
@@ -245,7 +249,8 @@ def build():
                 "embeddings (so they have no position), between [CLS] and the patches, start as small random values "
                 "(std 10<super>−6</super>), and are dropped at the output, where only [CLS] feeds the "
                 "classifier. For 64×64 images we use 8×8 patches (64 patch tokens). Training follows "
-                "the DeiT recipe, scaled down: AdamW (learning rate 10<super>−3</super>, weight decay 0.05), "
+                "the DeiT recipe, scaled down: AdamW (peak learning rate 10<super>−3</super> for the runs in Section 6.2 "
+                "and 2.5×10<super>−4</super> in the experiment, see Section 7; weight decay 0.05), "
                 "5 warm-up epochs then cosine decay, label smoothing 0.1, stochastic depth 0.1, gradient clipping, "
                 "and mixed precision; batch size 256, 50 epochs, seed 0."),
               p("<b>Engineering checks.</b> Before any long run we ran 24 automatic checks on a real batch (shapes, "
@@ -315,13 +320,15 @@ def build():
     story += [p("6.2 Training our own ViT with and without registers", "h2"),
               p(f"ViT-Tiny (5.4M parameters) trained for 50 epochs on all of Tiny-ImageNet reaches "
                 f"<b>{acc0:.2f}%</b> validation accuracy without registers and <b>{acc4:.2f}%</b> with 4 "
-                f"registers ({acc4 - acc0:+.2f} points). The training-loss curves lie on top of each other "
+                f"registers ({f'{acc4 - acc0:+.2f}'.replace('-', '−')} points). The training-loss curves lie on top of each other "
                 "(Figure 3). The paper reports changes of −0.1 to +0.5 points at ImageNet scale, so this claim is "
                 "only partly reproduced: there is no large accuracy cost, but a small one cannot be ruled out from "
                 "a single run per setting, especially since the register run was paused and resumed once (which "
                 "changes the data order afterwards). Both models overfit (about 91.5% training accuracy; validation "
                 "loss is lowest around epoch 18), which is typical for ViTs trained from scratch on 100k images and "
-                "affects both runs equally.")]
+                "affects both runs equally. In the experiment (Section 7) we retrained ViT-Tiny at a lower learning "
+                "rate (2.5×10<super>−4</super>): it overfits much less (73% training accuracy) and registers change "
+                "accuracy by −0.81 points (39.74% vs 38.93%).")]
     story += figure("full_training_runs.png", "Training loss and validation accuracy of our ViT-Tiny, 0 vs 4 "
                     "registers, 50 epochs on Tiny-ImageNet.", width=15 * cm)
 
@@ -332,6 +339,12 @@ def build():
               p("<b>Design.</b> A model-size scaling study, the experiment planned in our proposal. We train ViT-Tiny, "
                 "ViT-Small" + (" and ViT-Base" if any(s["size"] == "base" for s in experiment) else "")
                 + ", each with 0 and 4 registers, keeping everything else fixed (data, recipe, 50 epochs, seed). "
+                "We first used the peak learning rate of our ViT-Tiny runs (10<super>−3</super>) for every size. "
+                "Both ViT-Base models collapsed with it after the warm-up (validation accuracy fell from 12.7% to "
+                "below 11%) and ViT-Small with registers trained badly, so we retrained all six models at "
+                "2.5×10<super>−4</super>, the value DeiT’s rule (5×10<super>−4</super> × batch size / 512) "
+                "gives for our batch size of 256. The 10<super>−3</super> runs are reported separately (Table 3, "
+                "Figure 8) and are not used in the other figures. "
                 "For each trained model we measure, on the same 2,000 validation images, the patch-token norms "
                 "after every block (before the final LayerNorm), the share of outliers (above 3× the median, "
                 "as in Part A), the largest/median norm, how much attention patches and [CLS] give to the "
@@ -340,26 +353,41 @@ def build():
                 "<b>Hypothesis</b> from the paper: no outliers in our small models, little use of the registers, "
                 "and outliers only at the top of the DINOv2 range.")]
     if experiment:
-        exp_rows = []
-        for s in experiment:
-            lb = s["last_block"]
-            exp_rows.append([f"ViT-{s['size'].capitalize()}", f"{s['params'] / 1e6:.1f}M", s["registers"],
-                             f"{100 * s['val_acc']:.2f}%" if s.get("val_acc") else "n/a",
+        def exp_rows(runs):
+            rows = []
+            for s in runs:
+                lb = s["last_block"]
+                lr = {1e-3: "1e-3", 2.5e-4: "2.5e-4"}.get(s["lr"], f"{s['lr']:g}")
+                rows.append([s["size"].capitalize(), f"{s['params'] / 1e6:.1f}M", s["registers"],
+                             lr, f"{100 * s['val_acc']:.2f}%" if s.get("val_acc") else "n/a",
+                             f"{100 * s['train_acc']:.1f}%" if s.get("train_acc") is not None else "n/a",
                              f"{lb['max_over_median']:.2f}×", f"{lb['pct_outliers']:.2f}%",
                              f"{max(x['max_over_median'] for x in s['layers']):.2f}×",
                              "n/a" if not s["registers"] else
                              f"{100 * s['attn_patch_to_reg']:.1f}% ({100 * s['attn_uniform_share']:.1f}%)"])
+            return rows
+        header = ["ViT", "Params", "Reg.", "LR", "Val acc.", "Train acc.", "Max / median", "Outliers",
+                  "Peak (any block)", "Patch attention to registers"]
+        widths = [1.4 * cm, 1.6 * cm, 1.0 * cm, 1.4 * cm, 1.7 * cm, 1.6 * cm, 1.7 * cm, 1.7 * cm, 1.8 * cm, 2.9 * cm]
         story += numbered_table(
-            "Our trained ViTs (2,000 Tiny-ImageNet validation images). Uniform share in brackets.",
-            ["Model", "Params", "Reg.", "Val acc.", "Largest / median", "% outliers", "Peak over blocks",
-             "Patch attention to registers"], exp_rows,
-            [1.9 * cm, 1.5 * cm, 1.0 * cm, 1.7 * cm, 2.2 * cm, 1.8 * cm, 2.2 * cm, 4.2 * cm])
+            "Our trained ViTs (2,000 Tiny-ImageNet validation images, last block, before the final LayerNorm). "
+            "Uniform attention share in brackets.", header, exp_rows(experiment), widths)
+        if extra_runs:
+            story += numbered_table(
+                "First attempt with a peak learning rate of 10<super>−3</super> (not used in the other figures).",
+                header, exp_rows(extra_runs), widths)
         story += figure("experiment_scaling.png", "Artifacts against model size: our from-scratch ViTs (circles) and "
                         "Meta’s DINOv2 (triangles), without (orange) and with (blue) registers.")
         story += figure("experiment_layer_norms.png", "Largest/median patch-token norm after every block of our "
                         "models (compare with the paper’s Fig. 4a).", width=12 * cm)
+        story += figure("experiment_norm_histograms.png", "Patch-token norm divided by the model’s median norm "
+                        "(last block, before the final LayerNorm). Every model stays far below the 3× outlier line; "
+                        "compare with the second hump of DINOv2 ViT-g in Figure 1.")
         story += figure("experiment_accuracy_registers.png", "Left: validation accuracy. Right: share of last-block "
                         "attention that goes to the registers; dotted lines show the share under uniform attention.")
+        story += figure("experiment_learning_rate.png", "Validation accuracy per epoch at the two peak learning rates. "
+                        "At 10<super>−3</super> ViT-Base collapses after the warm-up and ViT-Small trains worse; at "
+                        "2.5×10<super>−4</super> all sizes train normally.")
     else:
         story.append(p("<i>[Experiment results are added when the training runs finish.]</i>"))
 
@@ -369,38 +397,73 @@ def build():
 
     # ---------------- 9 ----------------
     story += [p("9. Deployment", "h1"),
-              p("We deployed the project as a FastAPI web application (app/ in the repository). A user uploads an "
-                "image in the browser (or sends it to <font face='" + BODY + "'>POST /predict</font>) and receives:"),
+              p("We deployed the project as a FastAPI web application (<font face='Courier'>app/</font> in the "
+                "repository). A user uploads an image in the browser, or sends it to the API, and receives:"),
               *bullets([
-                  "a <b>prediction</b>: the top-5 Tiny-ImageNet classes from our own ViT-Tiny models, without and "
-                  "with registers, using exactly the validation preprocessing from training (resize and centre-crop "
-                  "to 64×64, ImageNet normalisation);",
-                  "<b>what registers change</b>: the [CLS] attention map and the patch-token norm map of DINOv2 "
-                  "ViT-B/14 without and with registers, with the number of outlier patches. DINOv2 is used here "
-                  "because our small models have no artifacts to show (Section 7).",
-              ]),
-              p("The app loads all four models once at start-up, validates uploads (non-images return HTTP 400, "
-                "files over 10 MB return 413), offers a /health endpoint and automatic API documentation at /docs, "
-                "and is covered by five automated tests that run on every push. Start-up commands, input and output "
-                "formats and a worked example are documented in the README.")]
-    story += figure("deployment_screenshot.png", "The deployed app: upload, DINOv2 maps without vs with registers, "
-                    "and our ViT-Tiny’s prediction.", width=14 * cm)
+                  "a <b>prediction</b>: the top-5 Tiny-ImageNet classes from our own trained ViT-Tiny models, without "
+                  "and with registers. The app uses exactly the validation preprocessing from training (resize and "
+                  "centre-crop to 64×64, normalisation), and the weights are exported from our training runs in "
+                  "half precision (11 MB per model);",
+                  "<b>what registers change</b>: the [CLS] attention map and the patch-token norm map of Meta’s "
+                  "DINOv2, without and with registers, side by side, plus the number of outlier patches (norm above "
+                  "3× the median, the rule used everywhere in this project). DINOv2 is used here because our own "
+                  "small models have no artifacts to show (Section 7). The model size is a setting "
+                  "(<font face='Courier'>DINOV2_SIZE</font> = S, B, L or G; default B).",
+              ])]
+    story += numbered_table(
+        "The web API.",
+        ["Endpoint", "Input", "Output"],
+        [["GET /", "—", "the upload page (HTML)"],
+         ["POST /predict", "multipart form, one image file named <i>file</i> (JPEG, PNG, …; up to 10 MB)",
+          "JSON: top-5 classes and probabilities per classifier; per DINOv2 model the outlier count, largest/median "
+          "norm and the two maps as base64 PNG images; processing time"],
+         ["GET /health", "—", "whether the models are loaded"],
+         ["GET /docs", "—", "interactive API documentation generated by FastAPI"]],
+        [2.6 * cm, 5.6 * cm, 8.8 * cm])
+    story += [p("<b>Engineering.</b> All four models are loaded once when the server starts (FastAPI lifespan), "
+                "not on every request. Uploads are validated: a file that is not an image returns HTTP 400 and a "
+                "file over 10 MB returns 413. Attention maps are computed with the same hook-based code as Part A, "
+                "and norms are read before the final LayerNorm. Both norm maps share one colour scale (norm divided "
+                "by the model’s median, yellow at 3× and above), so the two models can be compared directly; an "
+                "earlier version scaled each map to its own range, which made small differences look large. Five "
+                "automated tests start the app with stand-in models and check every endpoint and the error cases; "
+                "they run on every push. On a laptop CPU a request takes about 1.6–2 s with DINOv2-B and 8 s with "
+                "DINOv2-L."),
+              p("<b>Worked example</b> (Figure 9, DINOv2-L). For a photo of sky above grass, DINOv2 without registers "
+                "puts most of its [CLS] attention on a single patch of empty sky, the artifact of the paper’s Fig. 1; "
+                "with registers the attention moves to the grass, the only content in the image. Neither ViT-L model "
+                "has a patch above 3× the median (largest/median 1.64× without registers, 1.16× with), which "
+                "agrees with Part A, where only ViT-g had clear norm outliers. On a photo of a spider web both of our "
+                "classifiers answer “spider web” (30% without registers, 61% with).")]
+    story += figure("deployment_screenshot.png", "The deployed app on a photo of sky above grass (DINOv2-L): without "
+                    "registers the attention sits on one sky patch; with registers it moves to the grass. Below: our "
+                    "ViT-Tiny’s top-5 classes.", width=12 * cm)
 
     # ---------------- 10 ----------------
     story += [p("10. Limitations", "h1"), *bullets([
-        "<b>Compute:</b> a single free Colab T4 GPU. We could not train models of the paper’s size or on its "
-        "data, so large-model results come from Meta’s released checkpoints and our own models are small.",
+        "<b>Compute:</b> Google Colab GPUs (T4, L4 and A100 when available). We could not train models of the "
+        "paper’s size or on its data, so large-model results come from Meta’s released checkpoints and our own "
+        "models are small. Some runs moved between GPU types or were paused and resumed from their last saved "
+        "epoch (ViT-Tiny with registers after epoch 14; the first ViT-Base with registers after epoch 4); resuming "
+        "changes the order of the training images afterwards.",
         "<b>Dataset substitution:</b> Tiny-ImageNet (64×64) instead of ImageNet-22k/LVD-142M; absolute "
         "accuracies are not comparable with the paper.",
         "<b>Distilled checkpoints:</b> Meta’s released ViT-S/B/L were distilled from ViT-g, so Part A’s "
         "size trend is not a clean test of the paper’s Fig. 4c.",
-        "<b>Single seed per setting</b> and one pause/resume in a training run; differences of about one point "
-        "may be noise.",
-        "<b>Overfitting</b> of our from-scratch ViTs (≈91% train vs ≈39% validation accuracy for "
-        "ViT-Tiny).",
-        "<b>Not tested:</b> the probing results on what high-norm tokens contain (Table 1, Fig. 5b) and the "
-        "downstream benefits of registers (dense prediction, LOST object discovery; Tables 2–3).",
+        "<b>One recipe, one seed:</b> we did not tune hyper-parameters per size; the learning rate of "
+        "2.5×10<super>−4</super> was chosen by DeiT’s rule after 10<super>−3</super> failed for ViT-Base. "
+        "With one seed per setting, accuracy differences of about one point may be noise.",
+        "<b>Training length:</b> the paper finds that artifacts appear only after long training (its Fig. 4b). "
+        "Our 50 epochs on 100,000 images are far shorter than DINOv2’s training, so our experiment cannot "
+        "separate the effect of model size from the effect of training length.",
+        "<b>Overfitting</b> of our from-scratch ViTs: ViT-Small and ViT-Base reach 97–99% training accuracy "
+        "against about 40% on validation (ViT-Tiny: 73%).",
+        "<b>Not tested:</b> the probing results on what high-norm tokens contain (Table 1, Fig. 5b of the paper) "
+        "and the downstream benefits of registers (dense prediction, LOST object discovery; Tables 2–3).",
         "<b>Sample sizes:</b> 256 Imagenette images for Part A and 2,000 validation images for the experiment.",
+        "<b>Deployment:</b> the app runs on CPU; DINOv2-L takes about 8 s per image and the giant model, the only "
+        "one with clear norm outliers, needs about 9 GB of memory. Our classifiers know only 200 classes at 64×64, "
+        "so predictions on everyday photos are rough.",
     ])]
 
     # ---------------- 11 ----------------

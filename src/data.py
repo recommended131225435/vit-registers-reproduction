@@ -17,6 +17,7 @@ Folder layout after unzipping:
 """
 
 import random
+import zipfile
 from pathlib import Path
 
 import torch
@@ -45,7 +46,19 @@ def download_tiny_imagenet(root: str = "data") -> Path:
         print(f"Tiny-ImageNet already present at {path}")
         return path
     Path(root).mkdir(parents=True, exist_ok=True)
-    download_and_extract_archive(TINY_IMAGENET_URL, download_root=root, remove_finished=True)
+    archive = Path(root) / TINY_IMAGENET_URL.rsplit("/", 1)[-1]
+    for attempt in (1, 2):
+        try:
+            download_and_extract_archive(TINY_IMAGENET_URL, download_root=root, remove_finished=True)
+            break
+        except zipfile.BadZipFile:
+            # The server sometimes sends an error page instead of the zip. Delete it so the
+            # next attempt downloads again instead of reusing the broken file.
+            archive.unlink(missing_ok=True)
+            if attempt == 2:
+                raise RuntimeError(f"Downloading {TINY_IMAGENET_URL} failed twice (not a zip file). "
+                                   "Try again later.") from None
+            print("Download was not a valid zip file; trying once more.")
     return path
 
 

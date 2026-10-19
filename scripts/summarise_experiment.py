@@ -33,6 +33,12 @@ PART_A = REPO_ROOT / "results" / "part_a" / "summary.json"
 SIZE_ORDER = ["tiny", "small", "base"]
 # Parameter counts of Meta's DINOv2 backbones (DINOv2 paper, Table 16; patch size 14).
 DINOV2_PARAMS = {"S": 21e6, "B": 86e6, "L": 300e6, "g": 1100e6}
+RUNS_DIR = REPO_ROOT / "results" / "runs"
+# Peak learning rate of the runs used in the figures. Our first runs used 1e-3; ViT-Base did not train at
+# that rate (accuracy collapsed after the warmup), so every size was rerun at 2.5e-4 = 5e-4 x batch 256 / 512
+# (DeiT's rule). Runs at any other learning rate are listed in a separate table. If a size has no run at
+# MAIN_LR, its other run is used in the figures instead.
+MAIN_LR = {"tiny": 2.5e-4, "small": 2.5e-4, "base": 2.5e-4}
 
 
 def load_runs() -> list[dict]:
@@ -43,11 +49,37 @@ def load_runs() -> list[dict]:
             continue
         arrays = np.load(stats_path.parent / "arrays.npz")
         stats["arrays"] = {k: arrays[k] for k in arrays.files}
+        log_dir = RUNS_DIR / stats["run"]
+        config = json.loads((log_dir / "config.json").read_text()) if (log_dir / "config.json").exists() else {}
+        stats["lr"] = config.get("lr", 1e-3)
+        log = log_dir / "log.csv"
+        if log.exists():
+            header, *rows = log.read_text().strip().splitlines()
+            stats["train_acc"] = float(rows[-1].split(",")[header.split(",").index("train_acc")])
         runs.append(stats)
-    runs.sort(key=lambda r: (SIZE_ORDER.index(r["size"]), r["registers"]))
+    runs.sort(key=lambda r: (SIZE_ORDER.index(r["size"]), r["registers"], -r["lr"]))
     if not runs:
         raise SystemExit(f"No analysed runs in {EXP_DIR}; run scripts.analyse_run first.")
     return runs
+
+
+def split_runs(runs: list[dict]) -> tuple[list[dict], list[dict]]:
+    """One run per (size, registers) for the figures; the others are reported separately.
+
+    The figure uses the run at MAIN_LR for that size. If that run does not exist yet,
+    whatever run there is is used instead, so the figures can always be drawn.
+    """
+    main, extra = [], []
+    groups: dict = {}
+    for r in runs:
+        groups.setdefault((r["size"], r["registers"]), []).append(r)
+    for group in groups.values():
+        preferred = [r for r in group if np.isclose(r["lr"], MAIN_LR.get(r["size"], 1e-3))]
+        chosen = preferred[0] if preferred else group[0]
+        main.append(chosen)
+        extra += [r for r in group if r is not chosen]
+    key = lambda r: (SIZE_ORDER.index(r["size"]), r["registers"])
+    return sorted(main, key=key), sorted(extra, key=key)
 
 
 def label(r: dict) -> str:
@@ -103,22 +135,24 @@ def plot_layers(runs: list[dict], path: Path) -> None:
     ax.axhline(3.0, ls=":", c="grey", lw=1)
     ax.set(xlabel="block", ylabel="largest / median patch-token norm",
            title="Patch-token norms through the network (cf. paper Fig 4a)")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=7, handlelength=3.5)
     _save(fig, path)
 
 
 def plot_histograms(runs: list[dict], path: Path) -> None:
+    """Norm divided by the model's median norm, so every model is on the same scale as the 3x outlier rule."""
     sizes = [s for s in SIZE_ORDER if any(r["size"] == s for r in runs)]
-    fig, axes = plt.subplots(1, len(sizes), figsize=(4.2 * len(sizes), 3.4), squeeze=False)
+    fig, axes = plt.subplots(1, len(sizes), figsize=(4.2 * len(sizes), 3.4), squeeze=False, sharey=True)
+    bins = np.linspace(0, 4, 81)
     for ax, size in zip(axes[0], sizes):
-        group = [r for r in runs if r["size"] == size]
-        top = max(r["arrays"]["patch_norm"].astype(np.float32).max() for r in group)
-        bins = np.linspace(0, top * 1.02, 80)
-        for r in group:
-            ax.hist(r["arrays"]["patch_norm"].astype(np.float32).ravel(), bins=bins, density=True, alpha=0.6,
+        for r in [r for r in runs if r["size"] == size]:
+            norms = r["arrays"]["patch_norm"].astype(np.float32).ravel()
+            ax.hist(np.clip(norms / np.median(norms), 0, 4), bins=bins, density=True, alpha=0.6,
                     color=colour(r["registers"]), label=f"{r['registers']} registers")
-        ax.set(yscale="log", title=f"our ViT-{size.capitalize()}", xlabel="L2 norm of patch token")
-        ax.legend(fontsize=7)
+        ax.axvline(3.0, ls=":", c="grey", lw=1)
+        ax.text(3.05, 0.9, "outlier\ncutoff", transform=ax.get_xaxis_transform(), fontsize=7, color="grey")
+        ax.set(yscale="log", title=f"our ViT-{size.capitalize()}", xlabel="patch-token norm / median norm")
+        ax.legend(fontsize=7, loc="upper left")
     axes[0][0].set_ylabel("density (log scale)")
     fig.suptitle("Patch-token norms of our trained models (last block, before the final LayerNorm)")
     _save(fig, path)
@@ -169,29 +203,61 @@ def plot_accuracy_and_registers(runs: list[dict], path: Path) -> None:
     _save(fig, path)
 
 
+def plot_learning_rate(runs: list[dict], path: Path) -> None:
+    """Validation accuracy per epoch for every run: one panel per size, line style = peak learning rate."""
+    sizes = [s for s in SIZE_ORDER if any(r["size"] == s for r in runs)]
+    fig, axes = plt.subplots(1, len(sizes), figsize=(4.2 * len(sizes), 3.4), squeeze=False, sharey=True)
+    for ax, size in zip(axes[0], sizes):
+        for r in [r for r in runs if r["size"] == size]:
+            log = RUNS_DIR / r["run"] / "log.csv"
+            if not log.exists():
+                continue
+            header, *rows = log.read_text().strip().splitlines()
+            cols = header.split(",")
+            epochs = [int(row.split(",")[cols.index("epoch")]) for row in rows]
+            acc = [100 * float(row.split(",")[cols.index("val_acc")]) for row in rows]
+            ax.plot(epochs, acc, "-" if np.isclose(r["lr"], MAIN_LR[size]) else "--", color=colour(r["registers"]),
+                    label=f"{r['registers']} reg, lr {r['lr']:g}")
+        ax.set(title=f"our ViT-{size.capitalize()}", xlabel="epoch")
+        ax.legend(fontsize=7)
+    axes[0][0].set_ylabel("validation accuracy (%)")
+    fig.suptitle("Effect of the peak learning rate (solid: runs used in the figures, dashed: other runs)")
+    _save(fig, path)
+
+
 # ----------------------------------------------------------------------------
 # Table
 # ----------------------------------------------------------------------------
-def format_summary(runs: list[dict], part_a: dict | None) -> str:
+def run_rows(runs: list[dict]) -> list[list]:
     def pct(v, d=2):
         return "n/a" if v is None else f"{100 * v:.{d}f}%"
 
-    ours = markdown_table(
-        ["Model", "Parameters", "Registers", "Val accuracy", "Median norm", "Largest / median",
-         "% outliers", "Peak largest/median over blocks", "Patch attention to registers (uniform)"],
-        [[f"ViT-{r['size'].capitalize()}", f"{r['params'] / 1e6:.1f}M", r["registers"], pct(r["val_acc"]),
-          f"{r['last_block']['median']:.1f}", f"{r['last_block']['max_over_median']:.2f}x",
-          f"{r['last_block']['pct_outliers']:.2f}%",
-          f"{max(layer['max_over_median'] for layer in r['layers']):.2f}x",
-          "n/a" if not r["registers"] else f"{pct(r['attn_patch_to_reg'], 1)} ({pct(r['attn_uniform_share'], 1)})"]
-         for r in runs],
-    )
+    return [[f"ViT-{r['size'].capitalize()}", f"{r['params'] / 1e6:.1f}M", r["registers"], f"{r['lr']:g}",
+             pct(r["val_acc"]), pct(r.get("train_acc"), 1),
+             f"{r['last_block']['median']:.1f}", f"{r['last_block']['max_over_median']:.2f}x",
+             f"{r['last_block']['pct_outliers']:.2f}%",
+             f"{max(layer['max_over_median'] for layer in r['layers']):.2f}x",
+             "n/a" if not r["registers"] else f"{pct(r['attn_patch_to_reg'], 1)} ({pct(r['attn_uniform_share'], 1)})"]
+            for r in runs]
+
+
+RUN_HEADER = ["Model", "Parameters", "Registers", "Peak LR", "Val accuracy", "Train accuracy", "Median norm",
+              "Largest / median", "% outliers", "Peak largest/median over blocks",
+              "Patch attention to registers (uniform)"]
+
+
+def format_summary(runs: list[dict], extra: list[dict], part_a: dict | None) -> str:
     parts = [
         f"Our models: analysed on the same {runs[0]['n_images']:,} Tiny-ImageNet validation images. Norms are "
         "taken before the final LayerNorm; an outlier is a patch token whose norm is more than "
         f"{runs[0]['cutoff_mult']:g}x the median norm of the same model (same rule as Part A).",
-        ours,
+        markdown_table(RUN_HEADER, run_rows(runs)),
     ]
+    if extra:
+        parts += [
+            "Runs not used in the figures (same recipe, other peak learning rate; see the discussion below):",
+            markdown_table(RUN_HEADER, run_rows(extra)),
+        ]
     if part_a:
         parts += [
             "Meta's DINOv2 models (from Part A), on the same axis:",
@@ -210,18 +276,23 @@ def format_summary(runs: list[dict], part_a: dict | None) -> str:
         "![Accuracy and register use](results/figures/experiment_accuracy_registers.png)",
         "![Attention maps](results/figures/experiment_attention_maps.png)",
     ]
+    if extra:
+        parts.append("![Learning rate](results/figures/experiment_learning_rate.png)")
     return "\n\n".join(parts)
 
 
 def main() -> None:
-    runs = load_runs()
+    all_runs = load_runs()
+    runs, extra = split_runs(all_runs)
     part_a = json.loads(PART_A.read_text())["results"] if PART_A.exists() else None
     plot_scaling(runs, part_a, FIG_DIR / "experiment_scaling.png")
     plot_layers(runs, FIG_DIR / "experiment_layer_norms.png")
     plot_histograms(runs, FIG_DIR / "experiment_norm_histograms.png")
     plot_attention(runs, FIG_DIR / "experiment_attention_maps.png")
     plot_accuracy_and_registers(runs, FIG_DIR / "experiment_accuracy_registers.png")
-    summary = format_summary(runs, part_a)
+    if extra:
+        plot_learning_rate(all_runs, FIG_DIR / "experiment_learning_rate.png")
+    summary = format_summary(runs, extra, part_a)
     (EXP_DIR / "summary.md").write_text(summary + "\n")
     inject_into_readme("EXPERIMENT", summary)
     print(summary)
