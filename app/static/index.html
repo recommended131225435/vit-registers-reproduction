@@ -61,7 +61,8 @@
   <section id="results">
     <h2>Artifacts in DINOv2: without vs with registers</h2>
     <p class="note">Bright isolated squares in the background are the artifacts. With registers they should disappear.
-      Outlier patches: token norm more than 3&times; the median (measured before the final LayerNorm).</p>
+      Both norm maps use the same scale: each patch's token norm divided by the model's median (measured before
+      the final LayerNorm); yellow means 3&times; or more, which we count as an outlier.</p>
     <div id="artifacts" class="grid"></div>
 
     <h2>Prediction from our ViT-Tiny models</h2>
@@ -103,7 +104,7 @@
         <h3>${a.model}</h3>
         <div class="maps">
           <figure><img src="data:image/png;base64,${a.attention_map_png}" alt=""><figcaption>[CLS] attention</figcaption></figure>
-          <figure><img src="data:image/png;base64,${a.norm_map_png}" alt=""><figcaption>patch-token norms</figcaption></figure>
+          <figure><img src="data:image/png;base64,${a.norm_map_png}" alt=""><figcaption>token norm &divide; median (yellow = 3&times;+, outlier)</figcaption></figure>
         </div>
         <div class="stat">Outlier patches: <b>${a.outlier_patches}</b> of ${a.total_patches}
           &middot; largest / median norm: <b>${a.largest_over_median_norm}&times;</b></div>

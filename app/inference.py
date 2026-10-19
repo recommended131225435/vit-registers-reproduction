@@ -11,7 +11,8 @@ Two kinds of model are used:
    paper's effect: the [CLS] attention map and the patch-token norm map, side by side.
 
 Settings (environment variables):
-    DINOV2_SIZE   S, B (default) or L. Larger models show the artifacts more clearly but are slower.
+    DINOV2_SIZE   S, B (default), L or G. Strong norm outliers only appear in G (see Part A); G needs
+                  about 9 GB of RAM and a 9 GB download for the two models.
     DINOV2_REPO   where torch.hub gets the DINOv2 code (default: the official GitHub repo)
     APP_FAKE=1    random weights and no downloads; only for testing the code
 """
@@ -34,7 +35,7 @@ from src.data import MEAN, NUM_CLASSES, STD
 from src.vit import build_vit
 
 WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
-DINOV2_ARCHS = {"S": "vits14", "B": "vitb14", "L": "vitl14"}
+DINOV2_ARCHS = {"S": "vits14", "B": "vitb14", "L": "vitl14", "G": "vitg14"}
 OUTLIER_MULT = 3.0  # same outlier rule as the rest of the project: norm > 3x the median norm
 
 CLASSIFIER_INPUT = transforms.Compose([   # exactly the validation preprocessing used in training
@@ -152,7 +153,9 @@ def explain(exp: Explainer, image: Image.Image) -> dict:
         "total_patches": grid * grid,
         "largest_over_median_norm": round(float(norms.max() / median), 2),
         "attention_map_png": overlay_png(image, attention),
-        "norm_map_png": heatmap_png(norms),
+        # Same colour scale for every model: norm divided by the model's median, 0 to 4.
+        # Yellow (3x the median or more) marks the outlier patches.
+        "norm_map_png": heatmap_png(norms / median, vmin=0.0, vmax=OUTLIER_MULT + 1),
     }
 
 
@@ -173,15 +176,21 @@ def _to_png_base64(array: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode()
 
 
-def _colour(values: np.ndarray, size: int = 224) -> np.ndarray:
-    """Scale to 0..1, colour with viridis, and enlarge with sharp patch edges."""
-    scaled = (values - values.min()) / (values.max() - values.min() + 1e-12)
+def _colour(values: np.ndarray, size: int = 224, vmin: float | None = None, vmax: float | None = None) -> np.ndarray:
+    """Scale to 0..1, colour with viridis, and enlarge with sharp patch edges.
+
+    Without vmin/vmax the map is stretched to its own range (used for attention, which
+    sums to 1 anyway); with them, every map shares one fixed scale and values outside are clipped.
+    """
+    low = values.min() if vmin is None else vmin
+    high = values.max() if vmax is None else vmax
+    scaled = np.clip((values - low) / (high - low + 1e-12), 0.0, 1.0)
     rgb = (matplotlib.colormaps["viridis"](scaled)[..., :3] * 255).astype(np.uint8)
     return np.asarray(Image.fromarray(rgb).resize((size, size), Image.NEAREST))
 
 
-def heatmap_png(values: np.ndarray) -> str:
-    return _to_png_base64(_colour(values))
+def heatmap_png(values: np.ndarray, vmin: float | None = None, vmax: float | None = None) -> str:
+    return _to_png_base64(_colour(values, vmin=vmin, vmax=vmax))
 
 
 def overlay_png(image: Image.Image, values: np.ndarray, alpha: float = 0.6) -> str:

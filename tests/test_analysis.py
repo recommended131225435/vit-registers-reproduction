@@ -36,3 +36,19 @@ def test_cls_attention_map_matches_the_model_own_attention():
     hook.remove()
     expected = out["attn_last"][:, :, 0, 1 + R:].mean(dim=1).reshape(2, 8, 8)
     assert torch.allclose(ours, expected, atol=1e-6)
+
+
+def test_own_vit_stats_shapes_and_register_attention():
+    """The experiment measurements on our own ViT return one entry per block and a valid attention share."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from src.analysis import collect_own_vit_stats
+
+    model = build_vit("tiny", num_registers=4).eval()
+    data = TensorDataset(torch.randn(6, 3, 64, 64), torch.zeros(6, dtype=torch.long))
+    stats = collect_own_vit_stats(model, DataLoader(data, batch_size=3), torch.device("cpu"), num_maps=2)
+    assert len(stats["layer_summary"]) == len(model.blocks)
+    assert stats["patch_norm"].shape == (6, 64) and stats["reg_norm"].shape == (6, 4)
+    assert stats["attn_maps"].shape == (2, 8, 8)
+    assert ((stats["attn_patch_to_reg"] > 0) & (stats["attn_patch_to_reg"] < 1)).all()
+    assert stats["num_tokens"] == 1 + 4 + 64

@@ -336,7 +336,33 @@ Figures: `results/figures/part_a_*.png`
 Run with `notebooks/experiment_colab.ipynb` (`scripts.analyse_run`, then `scripts.summarise_experiment`).
 
 <!-- EXPERIMENT_START -->
-*Results are added when the runs finish.*
+Our models: analysed on the same 2,000 Tiny-ImageNet validation images. Norms are taken before the final LayerNorm; an outlier is a patch token whose norm is more than 3x the median norm of the same model (same rule as Part A).
+
+| Model | Parameters | Registers | Val accuracy | Median norm | Largest / median | % outliers | Peak largest/median over blocks | Patch attention to registers (uniform) |
+|---|---|---|---|---|---|---|---|---|
+| ViT-Tiny | 5.4M | 0 | 38.99% | 37.6 | 2.09x | 0.00% | 2.31x | n/a |
+| ViT-Tiny | 5.4M | 4 | 37.86% | 40.2 | 1.84x | 0.00% | 2.26x | 4.1% (5.8%) |
+| ViT-Small | 21.5M | 0 | 33.35% | 442.2 | 1.67x | 0.00% | 1.85x | n/a |
+| ViT-Small | 21.5M | 4 | 30.60% | 646.1 | 1.98x | 0.00% | 2.36x | 1.5% (5.8%) |
+
+Meta's DINOv2 models (from Part A), on the same axis:
+
+| Model | Parameters | % outliers (no reg / 4 reg) | Largest / median (no reg / 4 reg) |
+|---|---|---|---|
+| DINOv2 ViT-S/14 | ≈21M | 0.00% / 0.00% | 1.48x / 1.51x |
+| DINOv2 ViT-B/14 | ≈86M | 0.20% / 0.00% | 4.68x / 1.56x |
+| DINOv2 ViT-L/14 | ≈300M | 0.00% / 0.00% | 1.71x / 1.65x |
+| DINOv2 ViT-g/14 | ≈1100M | 2.62% / 0.00% | 11.30x / 2.66x |
+
+![Scaling](results/figures/experiment_scaling.png)
+
+![Norms through the blocks](results/figures/experiment_layer_norms.png)
+
+![Norm histograms](results/figures/experiment_norm_histograms.png)
+
+![Accuracy and register use](results/figures/experiment_accuracy_registers.png)
+
+![Attention maps](results/figures/experiment_attention_maps.png)
 <!-- EXPERIMENT_END -->
 
 ## 8. Deployment: web app and API
@@ -384,7 +410,34 @@ curl -F "file=@examples/example.jpg" http://localhost:8000/predict
 Errors: `400` if the file is not an image, `413` if it is larger than 10 MB. `GET /health` reports whether the models are loaded.
 
 <!-- DEPLOYMENT_EXAMPLE_START -->
-*Worked example and screenshot are added after the demo run.*
+**Worked example** (photo of sky above grass, `DINOV2_SIZE=L`, laptop CPU, 8.2 s per request):
+
+![App screenshot](results/figures/deployment_screenshot.png)
+
+```
+curl -s -F "file=@sky.jpg" localhost:8000/predict      # image fields removed below for space
+{
+  "classification": [
+    {"model": "Our ViT-Tiny, 0 registers", "validation_accuracy": 0.3899,
+     "top5": [{"class": "gazelle", "probability": 0.121}, {"class": "beaker", "probability": 0.0748}, ...]},
+    {"model": "Our ViT-Tiny, 4 registers", "validation_accuracy": 0.3786,
+     "top5": [{"class": "barn", "probability": 0.2813}, {"class": "alp", "probability": 0.1607}, ...]}
+  ],
+  "artifacts": [
+    {"model": "DINOv2 ViT-L/14, 0 registers", "registers": 0, "outlier_patches": 0,
+     "total_patches": 256, "largest_over_median_norm": 1.64},
+    {"model": "DINOv2 ViT-L/14, 4 registers", "registers": 4, "outlier_patches": 0,
+     "total_patches": 256, "largest_over_median_norm": 1.16}
+  ],
+  "filename": "sky.jpg",
+  "seconds": 8.22
+}
+```
+
+What it shows:
+- **Attention:** without registers, DINOv2's [CLS] token puts most of its attention on one patch of empty sky (the bright square), which is the paper's artifact (Fig 1). With registers the attention moves to the grass, the only real content in the photo.
+- **Norms:** neither ViT-L model has a patch above 3x the median, but the largest norm is still higher without registers (1.64x vs 1.16x). This matches Part A, where ViT-L had no outliers (largest 1.71x) and only ViT-g had many (2.62%, largest 11.3x). So the app shows the artifact through attention for L, and through norms only for G (`DINOV2_SIZE=G`, about 9 GB of RAM).
+- **Our classifiers:** the sky photo has no Tiny-ImageNet class, so the guesses are scenery classes (barn, alp, cliff). On a photo of a spider web both models answer "spider web" (30% without registers, 61% with).
 <!-- DEPLOYMENT_EXAMPLE_END -->
 
 **Tests:** `tests/test_app.py` starts the app with stand-in models and checks every endpoint (including bad uploads); it runs automatically on every push.
