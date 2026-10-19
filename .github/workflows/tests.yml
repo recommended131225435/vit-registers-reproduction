@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy matplotlib pytest
+          pip install numpy matplotlib pytest fastapi uvicorn python-multipart pillow httpx
       - name: Unit tests
         run: python -m pytest -q
       - name: Forward-pass check on random data

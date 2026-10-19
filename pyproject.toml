@@ -2,3 +2,4 @@
 # Lets the tests import "src" when pytest is run from the repo root.
 pythonpath = ["."]
 testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning:starlette.*"]

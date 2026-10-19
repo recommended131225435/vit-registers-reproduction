@@ -17,6 +17,11 @@ Tags:
 | `src/plots.py`, `src/report.py`, `src/utils.py` | Written | |
 | `scripts/check_forward_pass.py`, `scripts/run_part_a.py`, `scripts/summarise_training.py` | Written | |
 | `tests/`, `notebooks/milestone2_colab.ipynb`, `notebooks/full_training_colab.ipynb` | Written | |
+| `src/analysis.py`: `collect_own_vit_stats`, `summarise_norms` | Written | Experiment measurements for our own ViTs (norms after every block, register attention). |
+| `scripts/analyse_run.py`, `scripts/summarise_experiment.py`, `scripts/export_model.py` | Written | |
+| `notebooks/experiment_colab.ipynb` | Written | |
+| `app/main.py`, `app/inference.py`, `app/static/index.html` | Written | FastAPI app. Uses FastAPI, Uvicorn, Pillow and matplotlib's viridis colour map (libraries, reused). The attention map reuses our `cls_attention_map`. |
+| `tests/test_app.py` | Written | Uses FastAPI's `TestClient`. |
 | `.github/workflows/tests.yml` | Written | Standard GitHub Actions setup (`actions/checkout`, `actions/setup-python`) running our tests. |
 | DINOv2 model code and pretrained weights | Reused | Loaded unchanged with `torch.hub.load("facebookresearch/dinov2", ...)`. Apache-2.0 licence. |
 | Tiny-ImageNet dataset | Reused | http://cs231n.stanford.edu/tiny-imagenet-200.zip |

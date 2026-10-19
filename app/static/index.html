@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registers Demo</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a64; --line: #e3e1da;
+    --no-reg: #e07a1f; --reg: #2f6db5; --accent: #1d1d1b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a29b; --line: #34332f;
+            --no-reg: #f0a050; --reg: #6fa3e6; --accent: #ecebe6; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  p.lead { color: var(--muted); margin: 0 0 24px; max-width: 70ch; }
+  .drop { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; background: var(--panel);
+          border: 1px dashed var(--line); border-radius: 12px; padding: 18px; }
+  .drop img { width: 112px; height: 112px; object-fit: cover; border-radius: 8px; display: none; }
+  button { background: var(--accent); color: var(--bg); border: 0; border-radius: 8px; padding: 10px 18px;
+           font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: progress; }
+  .status { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 17px; margin: 32px 0 4px; }
+  .note { color: var(--muted); font-size: 14px; margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+          border-top: 4px solid var(--c, var(--line)); }
+  .card h3 { font-size: 15px; margin: 0 0 10px; }
+  .maps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .maps figure { margin: 0; } .maps img { width: 100%; border-radius: 6px; display: block; image-rendering: pixelated; }
+  figcaption { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .stat { font-size: 14px; margin-top: 10px; }
+  .stat b { font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  td.p { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .bar { height: 4px; background: var(--c); border-radius: 2px; margin-top: 3px; }
+  #results { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Vision Transformers Need Registers</h1>
+  <p class="lead">Upload a photo. Meta's DINOv2 without and with registers show where the model looks and which
+    patch tokens are unusually large (the paper's artifacts). Our own ViT-Tiny models, trained on Tiny-ImageNet,
+    predict the class.</p>
+
+  <form id="form" class="drop">
+    <img id="preview" alt="">
+    <input id="file" type="file" accept="image/*" required>
+    <button id="go" type="submit">Analyse</button>
+    <span id="status" class="status"></span>
+  </form>
+
+  <section id="results">
+    <h2>Artifacts in DINOv2: without vs with registers</h2>
+    <p class="note">Bright isolated squares in the background are the artifacts. With registers they should disappear.
+      Outlier patches: token norm more than 3&times; the median (measured before the final LayerNorm).</p>
+    <div id="artifacts" class="grid"></div>
+
+    <h2>Prediction from our ViT-Tiny models</h2>
+    <p class="note">200 Tiny-ImageNet classes, images shrunk to 64&times;64. These small models reach about 38&ndash;39%
+      validation accuracy, so expect rough guesses.</p>
+    <div id="classes" class="grid"></div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const colour = (registers) => registers > 0 ? "var(--reg)" : "var(--no-reg)";
+
+  $("file").addEventListener("change", () => {
+    const f = $("file").files[0];
+    if (f) { $("preview").src = URL.createObjectURL(f); $("preview").style.display = "block"; }
+  });
+
+  $("form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = new FormData();
+    body.append("file", $("file").files[0]);
+    $("go").disabled = true; $("status").textContent = "Running the models…";
+    try {
+      const response = await fetch("/predict", { method: "POST", body });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || response.statusText);
+      show(data);
+      $("status").textContent = `Done in ${data.seconds}s`;
+    } catch (error) {
+      $("status").textContent = "Error: " + error.message;
+    } finally {
+      $("go").disabled = false;
+    }
+  });
+
+  function show(data) {
+    $("artifacts").innerHTML = data.artifacts.map((a) => `
+      <div class="card" style="--c:${colour(a.registers)}">
+        <h3>${a.model}</h3>
+        <div class="maps">
+          <figure><img src="data:image/png;base64,${a.attention_map_png}" alt=""><figcaption>[CLS] attention</figcaption></figure>
+          <figure><img src="data:image/png;base64,${a.norm_map_png}" alt=""><figcaption>patch-token norms</figcaption></figure>
+        </div>
+        <div class="stat">Outlier patches: <b>${a.outlier_patches}</b> of ${a.total_patches}
+          &middot; largest / median norm: <b>${a.largest_over_median_norm}&times;</b></div>
+      </div>`).join("");
+
+    $("classes").innerHTML = data.classification.map((c) => {
+      const reg = c.model.includes(", 4 registers") ? 4 : 0;
+      const rows = c.top5.map((t) => `
+        <tr><td>${t.class}<div class="bar" style="--c:${colour(reg)};width:${Math.max(2, t.probability * 100)}%"></div></td>
+            <td class="p">${(t.probability * 100).toFixed(1)}%</td></tr>`).join("");
+      return `<div class="card" style="--c:${colour(reg)}"><h3>${c.model}</h3><table>${rows}</table></div>`;
+    }).join("");
+    $("results").style.display = "block";
+  }
+</script>
+</body>
+</html>

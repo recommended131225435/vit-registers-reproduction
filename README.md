@@ -19,9 +19,9 @@ Team Members: Hamza Uzair (30544), Shaheer Ahmed (31543)
 | The high norms move into the registers | Fig 15 | One register at 1389.6 vs 107.8 for a typical patch | **Yes** |
 | High-norm tokens only appear in large models | Fig 4c: from ViT-L up | Only in ViT-g (released S/B/L are distilled) | **Partly** |
 | Registers do not hurt accuracy | Table 2a: −0.1 to +0.5 points | −1.13 points on our ViT-Tiny, single run | **Partly** |
-| Registers improve dense tasks and object discovery | Tables 2a, 3 | Not tested yet | Week 4 |
+| Registers improve dense tasks and object discovery | Tables 2a, 3 | Not tested (see Limitations) | — |
 
-**Week 3 milestone:** data pipeline, our own ViT with registers, and forward pass all done (24/24 checks, section 5). Beyond the milestone: the reproduction on Meta's models above (Part A), and two full 50-epoch training runs.
+**Milestones:** reproduction (sections 5–6), our own experiment on model size (section 7) and a deployed web app (section 8).
 
 ## 1. The paper in short
 
@@ -53,8 +53,8 @@ For vision, the key background is self-supervised learning. **DINO** (Caron et a
 |---|---|---|
 | **A** | Reproduce the paper's diagnostic findings (Fig 1, 3, 4c, 5a, 7, 15) on the **official pretrained DINOv2 models**, with and without registers. No training needed. | Done: `scripts/run_part_a.py`, results in section 6 |
 | **B** | **Our own ViT implementation with a register option**, a Tiny-ImageNet data pipeline, and a training script. Train small ViTs with 0 vs 4 registers. | Pipeline, model and forward pass done (24/24 checks). Two full 50-epoch runs done (0 vs 4 registers). Section 5. |
-| Experiment | *At what model size do high-norm artifacts appear, and do registers change anything below that size?* | Week 4 |
-| Deployment | FastAPI app: upload an image, see attention maps without vs with registers | Week 5 |
+| Experiment | *Do high-norm artifacts appear in small ViTs trained from scratch, or only once models are large? Do registers change anything below that size?* | Section 7 |
+| Deployment | FastAPI app: upload an image, get a class prediction from our ViT-Tiny and see DINOv2's attention and norm maps without vs with registers | Section 8 |
 
 ### Metrics we use, and what they miss
 
@@ -81,18 +81,29 @@ src/
 └── utils.py          Shared helpers (random seed, device, parameter count)
 
 scripts/
-├── check_forward_pass.py   Week 3 check: data -> model -> loss -> gradients (24 checks)
+├── check_forward_pass.py   data -> model -> loss -> gradients (24 checks)
 ├── run_part_a.py           Part A: analysis of pretrained DINOv2 models
-└── summarise_training.py   Results table + graph for the full training runs
+├── summarise_training.py   Results table + graph for the full training runs
+├── analyse_run.py          Experiment: measure artifacts in one of our trained models
+├── summarise_experiment.py Experiment: tables + figures across all model sizes
+└── export_model.py         Export a trained ViT-Tiny for the app
+
+app/
+├── main.py        FastAPI app: web page, /predict, /health, /docs
+├── inference.py   model loading, prediction, attention and norm maps
+├── static/        the web page
+└── weights/       our exported ViT-Tiny models (0 and 4 registers)
 
 tests/                      Unit tests for the model and the measurements
 notebooks/milestone2_colab.ipynb   Runs everything for milestone 2 on Google Colab
 notebooks/full_training_colab.ipynb Full 50-epoch training runs (0 vs 4 registers)
+notebooks/experiment_colab.ipynb    Experiment: train ViT-Small/Base, measure artifacts in all our models
 .github/workflows/tests.yml         Runs the unit tests and a forward-pass check on every push
 results/
 ├── figures/     all plots
 ├── logs/        forward pass check report
 ├── part_a/      Part A numbers (summary.md, summary.json)
+├── experiment/  experiment numbers per run (stats.json, arrays.npz) and summary.md
 └── runs/        training logs (config.json, log.csv, final.json)
 requirements.txt        minimum library versions
 requirements-lock.txt   exact versions used on Colab (created by the notebook)
@@ -124,6 +135,7 @@ flowchart LR
 
 - [Milestone notebook](https://colab.research.google.com/github/recommended131225435/vit-registers-reproduction/blob/main/notebooks/milestone2_colab.ipynb): tests, forward-pass check, sanity runs and Part A (about 30–40 min).
 - [Full training notebook](https://colab.research.google.com/github/recommended131225435/vit-registers-reproduction/blob/main/notebooks/full_training_colab.ipynb): the 50-epoch runs (about 75 min each; progress is saved to Google Drive, so it can be resumed).
+- [Experiment notebook](https://colab.research.google.com/github/recommended131225435/vit-registers-reproduction/blob/main/notebooks/experiment_colab.ipynb): trains ViT-Small/Base and measures artifacts in all our models (section 7).
 
 **By hand** (always from the repo root):
 
@@ -133,6 +145,9 @@ python -m pytest                                  # unit tests
 python -m scripts.check_forward_pass              # downloads Tiny-ImageNet, checks data + forward pass
 python -m scripts.run_part_a --sizes S,B,L,g      # Part A (GPU recommended)
 python -m src.train --size tiny --registers 4 --epochs 50 --out results/runs/tiny_reg4   # a full training run
+python -m scripts.analyse_run --run results/runs/tiny_reg4   # experiment: measure artifacts in a trained run
+python -m scripts.summarise_experiment                       # experiment: tables + figures
+uvicorn app.main:app --port 8000                             # the web app (section 8)
 ```
 
 Every script has a quick code-test mode that uses random data instead of downloads (`--fake` or `--smoke`).
@@ -154,15 +169,15 @@ Every script has a quick code-test mode that uses random data instead of downloa
 |---|---|---|
 | Dataset | Tiny-ImageNet (100k train / 10k val, 200 classes, 64x64) | Freely downloadable, small enough for a free T4, 200 classes is harder than CIFAR. The official val set is our test set because test labels are not public. |
 | Patch size | 8 → 8x8 = 64 patch tokens | Standard choice for 64x64 images |
-| Model size | ViT-Tiny: 192-dim, 12 layers, 3 heads (5.4M params). Small and Base are also available for the Week 4 experiment. | Trains in reasonable time on a free GPU |
+| Model size | ViT-Tiny: 192-dim, 12 layers, 3 heads (5.4M params). ViT-Small (384-dim, 6 heads) and ViT-Base (768-dim, 12 heads) for the experiment. | Trains in reasonable time on a free GPU |
 | Number of registers | 0 (baseline) and 4 | The paper uses 4 in all its main experiments (Sec 3.2) |
 | Register placement | After the position embeddings, between [CLS] and patches, with no position embedding | Same as the official DINOv2 implementation |
 | Register init | Normal, std 1e-6 (same as [CLS]) | Same as the official DINOv2 implementation |
 | Output | Registers discarded; [CLS] → linear head | As in the paper (Fig 6) |
 | Training | AdamW (lr 1e-3, wd 0.05), 5 warmup epochs + cosine decay, label smoothing 0.1, stochastic depth 0.1, random-resized-crop + flip, mixed precision | Standard DeiT-style recipe for training ViTs from scratch on small data |
-| Strong augmentation (option, for Week 4) | + RandAugment (2 edits, magnitude 9), random erasing (25%), MixUp (0.8) or CutMix (1.0) per batch | Our basic runs overfit (91% train vs 39% val accuracy); these are the DeiT recipe's tools against overfitting. Off by default, so the runs below are unaffected. |
+| Strong augmentation (option, not used) | + RandAugment (2 edits, magnitude 9), random erasing (25%), MixUp (0.8) or CutMix (1.0) per batch | Implemented as the DeiT recipe's tools against overfitting. Off by default; we kept every run on the same basic recipe so the experiment changes only one thing (model size). |
 
-### Forward pass check (Week 3 milestone)
+### Forward pass check
 
 Output of `python -m scripts.check_forward_pass` on the real dataset:
 
@@ -230,8 +245,8 @@ Validation accuracy after the last epoch (we do not pick the best epoch, because
 - **Final validation accuracy: 38.99% without registers, 37.86% with 4 registers (−1.13 points).** The gap is steady rather than a one-epoch fluke: averaged over the last 10 epochs it is 38.99% vs 37.90%. Before epoch 20 the two runs are level, and the register model is even slightly ahead at epoch 10.
 - **Compared with the paper:** at large scale the paper finds registers change ImageNet accuracy by −0.1 to +0.5 points (Table 2a). Our drop is larger, so this claim is only **partly** reproduced: there is no big accuracy cost, but we cannot rule out a small one.
 - **Why we can't say more yet:** each setting was trained once (seed 0), and the register run was paused and resumed once after epoch 14, which changes the order of the training images afterwards. A 1-point gap can come from this kind of randomness alone; training a second seed of each setting would tell us.
-- **A possible explanation (to be tested):** the paper reports that artifacts only appear in large models trained for a long time. A ViT-Tiny on 64x64 images may have no artifacts at all, in which case registers have no job to do and only add four extra tokens to the attention. In Week 4 we will measure our trained models the same way as Part A to check whether they contain high-norm tokens.
-- **Both models overfit:** training accuracy (91.5%) is far above validation accuracy (38–39%), and validation loss is lowest around epoch 18 (3.23) before rising to 3.54 by epoch 50. This is typical for small ViTs trained from scratch on 100k images; stronger augmentation (MixUp, CutMix, RandAugment) would likely reduce it. We have added these as an option and will use them for the Week 4 runs. Since both runs here use identical settings, the comparison between them stays fair.
+- **A possible explanation (to be tested):** the paper reports that artifacts only appear in large models trained for a long time. A ViT-Tiny on 64x64 images may have no artifacts at all, in which case registers have no job to do and only add four extra tokens to the attention. The experiment (section 7) measures our trained models the same way as Part A to check this.
+- **Both models overfit:** training accuracy (91.5%) is far above validation accuracy (38–39%), and validation loss is lowest around epoch 18 (3.23) before rising to 3.54 by epoch 50. This is typical for small ViTs trained from scratch on 100k images; stronger augmentation (MixUp, CutMix, RandAugment) would likely reduce it. We added these as an option but did not use them, so all our runs share one recipe. Since both runs here use identical settings, the comparison between them stays fair.
 
 ## 6. Part A: reproducing the paper's findings on pretrained DINOv2
 
@@ -300,7 +315,81 @@ Figures: `results/figures/part_a_*.png`
 - **Model size (Fig 4c): partly reproduced.** Clear high-norm outliers appear only in ViT-g; ViT-B has a very small tail (0.20%), and S and L have none. The paper finds outliers from ViT-L upwards. A likely reason: Meta's released S, B and L models were distilled from ViT-g, whereas the paper's Fig 4c trains each size on its own. ViT-L still shows attention-map artifacts, so the behaviour is weakened in it rather than fully absent.
 - **The final LayerNorm hides the outliers.** In ViT-g the largest token is 11.3x the median norm before the final LayerNorm, but only 1.08x after it. The paper's norms must therefore be measured before this layer, which is what we do.
 
-## 7. Differences from the paper
+## 7. Experiment: do artifacts appear with model size?
+
+**Question (one sentence):** do high-norm artifact tokens appear in small ViTs trained from scratch, or only once models are large enough, and do registers change anything below that size?
+
+**Why this question.** The paper says artifacts appear only in large models trained for long (Fig 4c: from ViT-L upwards in DINOv2), but it shows this for one training method on hundreds of millions of images. Our own training budget allows only small models, so the useful question is what happens at the small end: are registers pointless there, or do small models already reuse tokens in a milder way?
+
+**Type:** a model-size scaling study (the proposal's planned experiment), with registers as a second factor.
+
+**Design.**
+
+| | |
+|---|---|
+| What we change | Model size: ViT-Tiny (5.4M), ViT-Small (21.7M), ViT-Base (85.8M, if compute allows); each with 0 and with 4 registers |
+| What we keep the same | Data (Tiny-ImageNet, 100k images), training recipe and length (50 epochs, section 5), seed, patch size |
+| What we measure | Patch-token norms after every block (before the final LayerNorm), % outlier tokens (> 3x median, as in Part A), largest/median norm, how much attention goes to the registers, [CLS] attention maps, validation accuracy |
+| Large-model reference | Meta's DINOv2 ViT-S/B/L/g from Part A, measured with the same rule, on the same size axis |
+| Expected result if the paper's explanation holds | No outliers in our small models; registers receive little attention and change little; outliers only at the large end of the DINOv2 range |
+
+Run with `notebooks/experiment_colab.ipynb` (`scripts.analyse_run`, then `scripts.summarise_experiment`).
+
+<!-- EXPERIMENT_START -->
+*Results are added when the runs finish.*
+<!-- EXPERIMENT_END -->
+
+## 8. Deployment: web app and API
+
+A FastAPI app. The user uploads an image and gets back:
+1. **A prediction:** the top-5 Tiny-ImageNet classes from **our** ViT-Tiny models, without and with registers (trained in this project).
+2. **What registers change:** the [CLS] attention map and the patch-token norm map of **Meta's DINOv2 ViT-B/14**, without and with registers, side by side, with the number of outlier patches. We use DINOv2 here because our small models have no artifacts to show (section 7).
+
+**How to start it** (from the repo root, Python 3.10+):
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --port 8000
+```
+
+The first start downloads the two DINOv2 models (about 350 MB each, then cached). Open **http://localhost:8000** in a browser, or use the API. Interactive API docs are at http://localhost:8000/docs.
+
+Options (environment variables): `DINOV2_SIZE=S|B|L` (default `B`; `L` shows the artifacts more strongly but is slower), `APP_FAKE=1` (random weights, no downloads; for testing only).
+
+**Input:** `POST /predict` with a multipart form containing one image file named `file` (JPEG, PNG, ...; max 10 MB). Any size works: the classifiers resize it to 64x64 and DINOv2 to 224x224.
+
+```bash
+curl -F "file=@examples/example.jpg" http://localhost:8000/predict
+```
+
+**Output:** JSON (the PNG images are base64-encoded; shortened here):
+
+```json
+{
+  "classification": [
+    {"model": "Our ViT-Tiny, 0 registers", "validation_accuracy": 0.3899,
+     "top5": [{"class": "...", "probability": 0.41}, "..."]},
+    {"model": "Our ViT-Tiny, 4 registers", "validation_accuracy": 0.3786, "top5": ["..."]}
+  ],
+  "artifacts": [
+    {"model": "DINOv2 ViT-B/14, 0 registers", "registers": 0, "outlier_patches": 3, "total_patches": 256,
+     "largest_over_median_norm": 4.1, "attention_map_png": "iVBORw0KGgo...", "norm_map_png": "iVBORw0KGgo..."},
+    {"model": "DINOv2 ViT-B/14, 4 registers", "registers": 4, "outlier_patches": 0, "...": "..."}
+  ],
+  "filename": "example.jpg",
+  "seconds": 1.9
+}
+```
+
+Errors: `400` if the file is not an image, `413` if it is larger than 10 MB. `GET /health` reports whether the models are loaded.
+
+<!-- DEPLOYMENT_EXAMPLE_START -->
+*Worked example and screenshot are added after the demo run.*
+<!-- DEPLOYMENT_EXAMPLE_END -->
+
+**Tests:** `tests/test_app.py` starts the app with stand-in models and checks every endpoint (including bad uploads); it runs automatically on every push.
+
+## 9. Differences from the paper
 
 **Changes from our proposal**
 
@@ -313,23 +402,23 @@ Figures: `results/figures/part_a_*.png`
 - **Model sizes in Part A:** The paper's Fig 4c compares DINOv2 models trained separately at each size. Meta's *released* ViT-S/B/L were distilled from ViT-g, so the size trend in our Part A is measured on distilled models. This may differ from the paper's trend.
 - **Images:** 256 Imagenette validation images at 224x224 (16x16 patches), not the paper's image set or resolution.
 - **Outlier cutoff:** a fixed relative rule (3 × the model's median norm) instead of a hand-picked value per model. For ViT-g we also report the paper's cutoff of 150.
-- **Part B scale:** so far a ViT-Tiny (5.4M parameters) trained from scratch on 100,000 images of 64x64 for 50 epochs; ViT-Small (22M) and ViT-Base (86M) are planned for Week 4. The paper trains ViT-B/L/g on ImageNet-22k or larger datasets for much longer. The paper reports that artifacts only appear in large, long-trained models (Fig 4), so our small models may show no artifacts at all. This is what our Week 4 experiment tests.
+- **Part B scale:** ViTs of 5.4M–86M parameters trained from scratch on 100,000 images of 64x64 for 50 epochs. The paper trains ViT-B/L/g on ImageNet-22k or larger datasets for much longer. The paper reports that artifacts only appear in large, long-trained models (Fig 4), so our small models may show no artifacts at all. This is what our experiment (section 7) tests.
 
-## 8. Limitations
+## 10. Limitations
 
 - **Compute:** one free Colab T4 GPU. We cannot train models of the paper's size, so Part A uses Meta's released models and Part B uses a much smaller ViT.
 - **Released models:** Meta's ViT-S/B/L were distilled from ViT-g, so Part A's model-size trend is not a clean test of the paper's Fig 4c.
 - **Sample size in Part A:** 256 Imagenette validation images at 224x224. Enough to see the effects clearly, but the percentages would shift a little with a different image set.
 - **Single training run per setting:** differences of about a point between our two Part B runs may be random. The register run was also paused and resumed once, which changes the order of the training images after epoch 14.
 - **Overfitting:** our ViT-Tiny reaches 91.5% training but 39% validation accuracy. This lowers our absolute accuracy but affects both runs equally.
-- **Not tested yet:** whether our own trained ViTs contain high-norm tokens, the paper's claim that high-norm tokens hold global information (Table 1), and the benefits on dense tasks and object discovery (Tables 2a, 3). These are planned for Week 4.
+- **Not tested:** the paper's claim that high-norm tokens hold global rather than local information (Table 1, Fig 5b), and the benefits of registers on dense tasks and object discovery (Tables 2a, 3). These need linear probes or segmentation/LOST pipelines on large pretrained models, which did not fit our time and compute budget.
 
-## 9. Next steps
+## 11. Next steps
 
 - **Week 4:** measure our trained ViTs the same way as Part A (token norms, attention maps); rerun with strong augmentation against overfitting; the scaling experiment (Tiny / Small / Base, with vs without registers); and object discovery with LOST on Meta's models.
 - **Week 5:** FastAPI deployment, final report and presentation.
 
-## 10. Provenance
+## 12. Provenance
 
 See [PROVENANCE.md](PROVENANCE.md) for a file-by-file record of what was written for this project, what was adapted, and what was reused.
 

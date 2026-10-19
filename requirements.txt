@@ -4,3 +4,9 @@ torchvision>=0.17
 numpy
 matplotlib
 pytest
+# deployment app (app/)
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart
+pillow
+httpx            # only for the app tests
