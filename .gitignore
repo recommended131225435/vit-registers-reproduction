@@ -5,3 +5,4 @@ __pycache__/
 *.zip
 results/runs/*/checkpoint.pt
 .pytest_cache/
+.venv/
